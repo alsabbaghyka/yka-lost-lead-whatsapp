@@ -7,7 +7,7 @@
   "engines": { "node": ">=24" },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test --test-concurrency=1 test/",
+    "test": "node --test --test-concurrency=1 \"test/*.test.js\"",
     "create-admin": "node cli.js create-admin"
   }
 }

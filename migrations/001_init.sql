@@ -111,6 +111,7 @@ CREATE TABLE messages (
   idem_key TEXT UNIQUE,
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TEXT,
+  sent_at TEXT,                      -- when Meta accepted it (counts towards the daily cap)
   sent_by INTEGER REFERENCES users(id),
   automated INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
@@ -185,3 +186,6 @@ CREATE TABLE audit (
   detail TEXT
 );
 CREATE INDEX audit_at ON audit(at);
+
+-- runtime state the system sets itself (e.g. sending halted after an account error)
+CREATE TABLE system_state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
