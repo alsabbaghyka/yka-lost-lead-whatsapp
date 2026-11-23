@@ -10,9 +10,11 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test --test-concurrency=1 \"test/*.test.js\"",
-    "create-admin": "node cli.js create-admin"
+    "create-admin": "node cli.js create-admin",
+    "test:turso-adapter": "node --test --test-concurrency=1 --env-file-if-exists=.env.turso-adapter \"test/*.test.js\""
   },
   "dependencies": {
-    "@libsql/client": "0.18.0"
+    "@libsql/client": "0.18.0",
+    "@vercel/functions": "3.10.6"
   }
 }

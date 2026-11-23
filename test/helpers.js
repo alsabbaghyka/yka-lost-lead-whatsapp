@@ -1,7 +1,16 @@
 'use strict';
 // A whole system in memory: SQLite :memory:, fake Bahrain clock, mock provider
 // whose signed webhooks go through the real ingest path.
-const { openDb } = require('../src/db');
+const { openDb, LibsqlDb, migrate } = require('../src/db');
+
+/** The test database: SQLite, or the Turso adapter over a local stand-in (LLE_TEST_ENGINE=libsql-fake). */
+async function testDb() {
+  if (process.env.LLE_TEST_ENGINE !== 'libsql-fake') return openDb(':memory:');
+  const db = new LibsqlDb('http://fake.invalid', 'unused');
+  db.client = require('./fake-libsql').fakeClient();
+  await migrate(db);
+  return db;
+}
 const { loadConfig } = require('../src/config');
 const { fakeClock } = require('../src/clock');
 const { createContext } = require('../src/context');
@@ -10,7 +19,7 @@ const Settings = require('../src/settings');
 
 async function makeSystem({ now = '2026-12-02T07:00:00Z', env = {}, provider } = {}) {
   const cfg = loadConfig({ WA_PROVIDER: 'mock', DB_PATH: ':memory:', ...env });
-  const db = (await openDb(':memory:'));
+  const db = await testDb();
   const clock = fakeClock(now);
   const ctx = createContext({ cfg, db, clock, provider });
   const users = {
@@ -25,4 +34,4 @@ async function makeSystem({ now = '2026-12-02T07:00:00Z', env = {}, provider } =
   return { ctx, db, clock, cfg, users, Settings };
 }
 const H = 3600e3, D = 864e5;
-module.exports = { makeSystem, H, D };
+module.exports = { makeSystem, testDb, H, D };

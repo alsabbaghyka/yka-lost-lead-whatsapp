@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { openDb } = require('../src/db');
+const { testDb } = require('./helpers');
 const C = require('../src/clock');
 const { maskMobile, maskText } = require('../src/mask');
 const { audit } = require('../src/audit');
@@ -12,7 +13,7 @@ const Settings = require('../src/settings');
 const { loadConfig } = require('../src/config');
 
 test('migrations run once and are idempotent', async () => {
-  const db = (await openDb(':memory:'));
+  const db = (await testDb());
   const v = (await db.prepare('SELECT MAX(version) v FROM schema_migrations').get()).v;
   assert.ok(v >= 1);
   await require('../src/db').migrate(db);
@@ -21,7 +22,7 @@ test('migrations run once and are idempotent', async () => {
     assert.ok((await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(t)), t);
 });
 test('opt-outs cannot be deleted at the database level', async () => {
-  const db = (await openDb(':memory:'));
+  const db = (await testDb());
   (await db.prepare("INSERT INTO optouts(mobile, at, source) VALUES ('+97339990001', '2026-12-01T00:00:00Z', 'test')").run());
   await assert.rejects(async () => (await db.prepare('DELETE FROM optouts').run()), /opt-outs are permanent/);
 });
@@ -54,14 +55,14 @@ test('mobiles are masked everywhere', async () => {
   assert.equal(maskText('sent to +97339991234 and 97366001122, ref 12'), 'sent to +973****1234 and +973****1122, ref 12');
 });
 test('the audit log never stores a raw mobile', async () => {
-  const db = (await openDb(':memory:'));
+  const db = (await testDb());
   (await audit(db, { id: 1, email: 'a@x' }, 'optout.add', '+97339991234', { mobile: '+97339991234', note: 'customer 39991234 said stop' }));
   const row = (await db.prepare('SELECT * FROM audit').get());
   assert.doesNotMatch(JSON.stringify(row), /39991234/);
   assert.match(row.target, /\*\*\*\*1234/);
 });
 test('settings: safe defaults, typed values', async () => {
-  const db = (await openDb(':memory:'));
+  const db = (await testDb());
   const s = (await Settings.all(db));
   assert.equal(s.go_live, false, 'test mode on by default');
   assert.equal(s.kill_switch, false);
