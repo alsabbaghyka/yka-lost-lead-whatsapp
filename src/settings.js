@@ -30,8 +30,9 @@ function get(db, key) {
   return r ? d.parse(JSON.parse(r.value)) : d.def;
 }
 function set(db, key, value, userId) {
-  const d = DEFS[key]; if (!d) throw new Error('Unknown setting ' + key);
-  const v = d.parse(value);
+  const d = DEFS[key]; if (!d) throw Object.assign(new Error('Unknown setting ' + key), { status: 400 });
+  let v;
+  try { v = d.parse(value); } catch (e) { e.status = 400; e.message = `${key}: ${e.message}`; throw e; }
   db.prepare('INSERT INTO settings(key, value, updated_at, updated_by) VALUES (?,?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at, updated_by=excluded.updated_by')
     .run(key, JSON.stringify(v), new Date().toISOString(), userId || null);
   return v;
