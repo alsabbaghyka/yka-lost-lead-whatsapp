@@ -22,12 +22,12 @@ const STUCK_SENDING_MS = 5 * 60e3;
 
 const customerId = async (ctx, mobile) => ((await ctx.db.prepare('SELECT id FROM customers WHERE mobile = ?').get(mobile)) || {}).id || null;
 
-async function enqueueTemplate(ctx, { mobile, customerId: cid = null, enrollmentId = null, key, tplName, language, vars = [], body = null, idemKey }) {
+async function enqueueTemplate(ctx, { mobile, customerId: cid = null, enrollmentId = null, key, tplName, language, vars = [], body = null, idemKey, automated = true }) {
   const now = ctx.nowIso();
   const cust = cid || await customerId(ctx, mobile);
   const lang = language || await Settings.get(ctx.db, 'template_language');
   const r = await ctx.db.prepare(`INSERT OR IGNORE INTO messages(enrollment_id, customer_id, mobile, dir, kind, tpl_name, tpl_key, language, vars, body, status, idem_key, automated, created_at, updated_at)
-    VALUES (?,?,?,'out','template',?,?,?,?,?,'queued',?,1,?,?)`).run(enrollmentId, cust, mobile, tplName, key || null, lang, JSON.stringify(vars), body, idemKey, now, now);
+    VALUES (?,?,?,'out','template',?,?,?,?,?,'queued',?,?,?,?)`).run(enrollmentId, cust, mobile, tplName, key || null, lang, JSON.stringify(vars), body, idemKey, automated ? 1 : 0, now, now);
   return r.changes ? r.lastInsertRowid : null;
 }
 /** Free text: a person's reply (user) or an automatic answer to the customer (automated). */

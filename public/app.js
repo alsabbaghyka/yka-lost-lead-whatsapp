@@ -51,10 +51,19 @@ const STATUS = { queued: ['Waiting', ''], active: ['In sequence', 'steel'], aske
   APPROVED: ['Approved', 'live'], PENDING: ['Pending', 'test'], REJECTED: ['Rejected', 'bad'], PAUSED: ['Paused', 'bad'], DISABLED: ['Disabled', 'bad'], UNKNOWN: ['Not synced', ''], NOT_FOUND: ['Not in Meta', 'bad'] };
 const pill = s => { const x = STATUS[s] || [s, '']; return `<span class="pill ${x[1]}">${esc(x[0])}</span>`; };
 const BUCKET = { price: 'Price or finance', stock: 'Waiting for stock', thinking: 'Still thinking', competitor: 'Bought elsewhere', features: "Product didn't fit", family: 'Family said no', noresp: 'Stopped responding', noreason: 'No reason recorded', disq: 'Disqualified', ask: 'Asked the reason' };
+const MODE = { mock: ['Practice mode', 'Nothing reaches a real phone. Deliveries, reads and replies are pretended, so you can safely try every step.'],
+  'dry-run': ['Dry run', 'Messages are only written down here, never sent.'], cloud: ['Connected to WhatsApp', "Messages go to real phones through Meta's WhatsApp Cloud API."] };
+const TPL_LABEL = { ask: 'Ask why they did not buy', permission: 'Ask permission to message', price: 'Price or finance', stock: 'Stock arriving', thinking: 'Still thinking', competitor: 'Bought elsewhere: after-sales offer', features: 'Other models', family: 'Family test drive', nudge: 'Day 2 reminder', voucher: 'Day 7 voucher', monthly: 'Monthly news' };
+const names = list => list.length ? list.map(u => u.name).join(', ') : 'nobody yet: add a marketing user on the Users screen';
+const plural = (n, w) => `${fmt(n)} ${w}${n === 1 ? '' : 's'}`;
+function themeButtons() {
+  let t = 'light'; try { t = localStorage.getItem('theme') || 'light'; } catch { /* storage blocked */ }
+  document.querySelectorAll('[data-act=theme]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.t === t)));
+}
 function bars() { main.querySelectorAll('[data-w]').forEach(el => { el.style.width = el.dataset.w + '%'; }); }
 
 /* ---------- shell ---------- */
-const NAV = [['', 'Dashboard'], ['import', 'Import'], ['campaigns', 'Campaigns'], ['inbox', 'Inbox'], ['customers', 'Customers'], ['templates', 'Templates'], ['lists', 'Opt-outs & lists'], ['results', 'Results'], ['settings', 'Settings'], ['audit', 'Audit log', 'audit.view'], ['users', 'Users']];
+const NAV = [['start', 'Start here'], ['', 'Dashboard'], ['import', 'Upload file'], ['campaigns', 'Campaigns'], ['inbox', 'Inbox'], ['customers', 'Customers'], ['connect', 'Connect WhatsApp'], ['templates', 'Templates'], ['lists', 'Opt-outs & lists'], ['results', 'Results'], ['settings', 'Settings'], ['audit', 'Audit log', 'audit.view'], ['users', 'Users']];
 async function shell() {
   ME = await api('GET', '/api/me');
   let inbox = 0; try { inbox = (await api('GET', '/api/inbox')).length; } catch { /* ignore */ }
@@ -65,8 +74,8 @@ async function shell() {
   const strip = $('#strip'); strip.hidden = false;
   strip.innerHTML = (ME.killSwitch ? '<span class="pill kill">KILL SWITCH ON · nothing is sent</span>' : '') +
     (ME.halted ? '<span class="pill kill">SENDING HALTED · see Settings</span>' : '') +
-    (ME.goLive ? '<span class="pill live">LIVE · customers can receive messages</span>' : '<span class="pill test">TEST MODE · allow-listed numbers only</span>') +
-    `<span class="pill steel">Provider: ${esc(ME.provider)}</span>`;
+    (ME.goLive ? '<span class="pill live">LIVE · customers receive messages</span>' : '<span class="pill test">TEST MODE · only test phones receive messages</span>') +
+    `<a class="pill steel" href="#/connect" title="${esc(MODE[ME.provider][1])}">${esc(MODE[ME.provider][0])}</a>`;
 }
 function showLogin(msg) {
   $('#nav').hidden = true; $('#strip').hidden = true;
@@ -75,19 +84,21 @@ function showLogin(msg) {
     <label class="f">Email<input type="email" name="email" autocomplete="username" required></label>
     <label class="f">Password<input type="password" name="password" autocomplete="current-password" required></label>
     <button class="primary" type="submit">Sign in</button>
-    <p class="hint">No account? Ask an admin: users are added on the Users screen.</p></form>`;
+    <p class="hint">No account? Ask an admin: users are added on the Users screen.</p></form>
+    <section class="panel login"><h3>What this is</h3><p class="hint">It messages customers whose car sale was lost in the CRM, on WhatsApp, with a message that fits the reason, and passes every reply to their salesperson. After signing in, <b>Start here</b> walks you through it.</p></section>`;
 }
 
 /* ---------- screens ---------- */
 const screens = {};
 
 screens[''] = async () => {
-  const d = await api('GET', '/api/dashboard');
-  const banners = [];
+  const [d, g] = await Promise.all([api('GET', '/api/dashboard'), api('GET', '/api/guide')]);
+  const st = guideSteps(g), nx = st.find(x => !x.done && !x.soft);
+  const banners = [nx ? `<div class="next"><b class="h">Your next step</b>${esc(nx.t)}: ${nx.what} <a class="btn primary" href="${nx.go[0]}">${esc(nx.go[1])}</a> <a class="btn" href="#/start">See all steps</a></div>` : ''];
   if (d.killSwitch) banners.push(`<div class="banner bad">The kill switch is on. Nothing is being sent to anyone.</div>`);
   if (d.halted) banners.push(`<div class="banner bad">Sending stopped itself after an account-level error from Meta: ${esc(d.halted.label)}. Fix it, then resume from Settings.</div>`);
-  if (!d.goLive) banners.push(`<div class="banner warn">Test mode. Only numbers on the allow-list (Settings) can receive anything. Customers in running campaigns wait until an admin turns go-live on.</div>`);
-  if (d.provider !== 'cloud') banners.push(`<div class="banner steel">Provider is <b>${esc(d.provider)}</b>: no message reaches WhatsApp. ${d.provider === 'mock' ? 'Delivery, read and reply events are simulated.' : 'Sends are recorded only.'}</div>`);
+  if (!d.goLive) banners.push(`<div class="banner warn">Test mode: only the test phones (Connect WhatsApp) receive anything. Customers in running campaigns wait until an admin turns on Go live.</div>`);
+  if (d.provider !== 'cloud') banners.push(`<div class="banner steel">${esc(MODE[d.provider][0])}: ${esc(MODE[d.provider][1])} <a href="#/connect">How to connect WhatsApp</a></div>`);
   if (!d.approvedTemplates) banners.push(`<div class="banner warn">No approved templates are known. Sync them on the Templates screen.</div>`);
   return `${banners.join('')}
   <div class="tiles">
@@ -95,7 +106,7 @@ screens[''] = async () => {
     ${tile('Queued', d.queued, 'waiting in the outbox')}
     ${tile('Inbox', d.inbox, 'customers with a salesperson', d.inbox ? 'good' : '')}
     ${tile('Opted out', d.optouts, 'never messaged again', 'hold')}
-    ${tile('Dead letters', d.deadLetters, 'gave up after retries', d.deadLetters ? 'bad' : '')}
+    ${tile('Failed messages', d.deadLetters, 'gave up after retries', d.deadLetters ? 'bad' : '')}
     ${tile('Webhook backlog', d.webhookBacklog, 'events not yet processed', d.webhookBacklog > 50 ? 'bad' : '')}
   </div>
   <div class="grid2">
@@ -107,12 +118,95 @@ screens[''] = async () => {
     </section>
     <section class="panel"><h3>Waiting for a second person to approve</h3>
       ${d.pendingApproval.length ? d.pendingApproval.map(c => `<a class="btn" href="#/campaigns/${c.id}">${esc(c.name)}</a>`).join(' ') : '<p class="hint">Nothing waiting.</p>'}
-      <p class="hint">A campaign is approved by someone other than the person who built it.</p>
+      <p class="hint">A campaign is approved by someone other than the person who built it. Who can approve: ${esc(names(g.approvers))}.</p>
     </section>
   </div>
   <section class="panel"><h3>Latest messages</h3>
   ${table([{ h: 'When', v: r => dt(r.created_at) }, { h: 'Mobile', html: r => `<a href="#/customers/${encodeURIComponent(r.mobile)}" class="mono">${esc(r.mobile)}</a>` }, { h: 'Direction', v: r => r.dir === 'in' ? 'From customer' : 'To customer' },
     { h: 'Kind', v: r => r.kind }, { h: 'Status', html: r => pill(r.status) }, { h: 'Outcome', v: r => r.outcome || '' }], d.recent, 'No messages yet.')}</section>`;
+};
+
+/* start here */
+function guideSteps(g) {
+  const c = g.campaigns, n = (...ks) => ks.reduce((a, k) => a + (c[k] || 0), 0);
+  return [
+    { done: g.provider === 'cloud', soft: g.provider !== 'cloud', t: 'Connect WhatsApp', who: 'IT, once',
+      what: g.provider === 'cloud' ? "Connected to Meta's WhatsApp Cloud API." : `Not connected yet: the system is in <b>${esc(MODE[g.provider][0].toLowerCase())}</b>. You can still try every step below; nothing reaches a real phone until IT connects it.`, go: ['#/connect', 'Connect WhatsApp'] },
+    { done: g.approvedTemplates > 0, t: 'Get the messages approved by Meta', who: 'Marketing and IT',
+      what: `WhatsApp only lets a business start a chat with a message Meta has approved word for word. ${fmt(g.approvedTemplates)} of ${fmt(g.totalTemplates)} approved.`, go: ['#/templates', 'See the messages'] },
+    { done: g.allowlist > 0, t: 'Add your test phones', who: 'Admin',
+      what: `While test mode is on, only these phones receive anything. ${plural(g.allowlist, 'phone')} added.`, go: ['#/connect', 'Add test phones'] },
+    { done: g.imports > 0, t: 'Upload the CRM lost-sales file', who: 'Marketing',
+      what: 'The system reads each lost lead, picks the right message from the reason, and leaves out open deals, wrong numbers and opt-outs.', go: ['#/import', 'Upload a file'] },
+    { done: n('pending_approval', 'approved', 'running', 'paused', 'completed') > 0, t: 'Build a campaign and send it for approval', who: 'Marketing',
+      what: 'Open the uploaded file, choose the date the first message goes out, and press Create and send for approval.', go: ['#/import', 'Open the file'] },
+    { done: n('approved', 'running', 'paused', 'completed') > 0, t: 'A second person approves it', who: 'Admin or marketing, not the builder',
+      what: `Someone other than the builder checks and approves it. Who can approve: <b>${esc(names(g.approvers))}</b>.`, go: ['#/campaigns', 'Campaigns'] },
+    { done: n('running', 'paused', 'completed') > 0, t: 'Start the campaign', who: 'Admin or marketing',
+      what: `Press Start sending on the approved campaign. Messages go out at ${esc(g.sendTime)} Bahrain time on the first-message date.`, go: ['#/campaigns', 'Campaigns'] },
+    { done: g.goLive, t: 'Go live', who: 'Admin',
+      what: 'When the test phones received the right messages, an admin turns on Go live in Settings. From then on real customers receive them.', go: ['#/settings', 'Settings'] }
+  ];
+}
+screens.start = async () => {
+  const g = await api('GET', '/api/guide');
+  const st = guideSteps(g), next = st.findIndex(x => !x.done && !x.soft);
+  return `<h2>Start here</h2><p class="hint">Eight steps from a CRM file to messages on customers' phones. The ticks fill in by themselves as you go.</p>
+  <ol class="guide">${st.map((x, i) => `<li class="${x.done ? 'done' : i === next ? 'now' : ''}"><span class="num">${x.done ? '✓' : i + 1}</span><div>
+    <div class="row between"><b class="t">${esc(x.t)}</b><span class="row">${x.soft ? `<span class="pill steel">${esc(MODE[g.provider][0])}</span>` : ''}<span class="pill">${esc(x.who)}</span></span></div>
+    <p>${x.what}</p>${i === next || x.soft ? `<a class="btn ${i === next ? 'primary' : ''}" href="${x.go[0]}">${esc(x.go[1])}</a>` : ''}</div></li>`).join('')}</ol>
+  <div class="grid2"><section class="panel"><h3>What a customer receives</h3>
+    <dl class="timeline"><dt>Day 0</dt><dd>The <b>first-message date</b> you pick for the campaign, at ${esc(g.sendTime)}. The message matches the reason the sale was lost (price, stock, still thinking…), or asks why if no reason was written. Leads older than the permission date get a short "may we message you?" first.</dd>
+    <dt>Day 2</dt><dd>A short reminder, only if they have not replied.</dd><dt>Day 7</dt><dd>A test-drive voucher, only if still no reply.</dd><dt>Day 30</dt><dd>Monthly news, then once a month.</dd></dl>
+    <p class="hint">It stops at once when the customer replies (the reply goes to their salesperson's Inbox), writes STOP or presses Unsubscribe. Nothing is sent ${g.fridaySkip ? 'on Fridays or ' : ''}between ${esc(g.quietStart)} and ${esc(g.quietEnd)}. The Day 2, 7 and 30 messages are still drafts waiting for sign-off.</p>
+    <p class="hint"><b>Holdout:</b> a small share of customers is deliberately not messaged, so Results can show whether the messages made a difference.</p></section>
+  <section class="panel"><h3>Who does what</h3>${table([{ h: 'Role', v: r => r[0] }, { h: 'Can', v: r => r[1] }], [
+    ['Admin', 'Everything: test phones, Go live, kill switch, users and settings.'],
+    ['Marketing', 'Upload files, build campaigns, approve campaigns built by someone else, start and pause them, results.'],
+    ['Sales', 'Answer their customers in the Inbox.'], ['Viewer', 'Look only.']])}
+    <p class="hint">You are signed in as <b>${esc(ME.user.role)}</b>.</p></section></div>`;
+};
+
+/* connect whatsapp */
+screens.connect = async () => {
+  const [g, allow, tpls] = await Promise.all([api('GET', '/api/guide'), api('GET', '/api/allowlist'), api('GET', '/api/templates')]);
+  const admin = can('settings.edit'), m = MODE[g.provider], cloud = g.provider === 'cloud';
+  const approved = tpls.templates.filter(t => t.status === 'APPROVED' && !t.draft);
+  const ok = b => b ? '<span class="pill live">set</span>' : '<span class="pill bad">not set</span>';
+  const hook = (g.webhookUrl.startsWith('http') ? '' : location.origin) + g.webhookUrl;
+  const phones = allow.map(a => `<option value="${esc(a.mobile)}">${esc(a.mobile)}${a.note ? ' · ' + esc(a.note) : ''}</option>`).join('');
+  return `<h2>Connect WhatsApp</h2>
+  <div class="banner ${cloud ? 'good' : 'steel'}"><b>${esc(m[0])}.</b> ${esc(m[1])}</div>
+  <div class="grid2"><section class="panel"><h3>1 · Test phones</h3>
+    <p class="hint">In test mode only these phones receive anything. Add your own and a colleague's. With Meta's free test number, each phone must also be added as a recipient in Meta (WhatsApp → API Setup → "To").</p>
+    ${admin ? '<form data-form="allow" class="row"><input type="text" name="mobile" placeholder="Mobile, e.g. 3999 1001" required><input type="text" name="note" placeholder="Whose phone"><button class="primary" type="submit">Add test phone</button></form>' : '<p class="hint">Only an admin adds test phones.</p>'}
+    ${table([{ h: 'Mobile', v: r => r.mobile }, { h: 'Whose', v: r => r.note || '' }, { h: '', html: r => admin ? `<button class="ghost" data-act="unallow" data-mobile="${esc(r.mobile)}">Remove</button>` : '' }], allow, 'No test phones yet.')}</section>
+  <section class="panel"><h3>2 · Send a test message now</h3>
+    ${!admin ? '<p class="hint">Only an admin can send a test message.</p>' : !allow.length ? '<p class="hint">Add a test phone first.</p>' : !approved.length ? '<div class="banner warn">No message is approved by Meta yet. Sync the messages on the Templates screen once Meta has approved them.</div>' :
+      `<form data-form="testMessage" class="grid2"><label class="f">To<select name="mobile">${phones}</select></label>
+      <label class="f">Message<select name="template">${approved.map(t => `<option value="${esc(t.name)}" ${t.key === 'ask' ? 'selected' : ''}>${esc(TPL_LABEL[t.key] || t.key)} · ${esc(t.name)}</option>`).join('')}</select></label>
+      <div class="row"><button class="primary" type="submit">Send test message</button></div></form><div id="testResult"></div>`}
+    <p class="hint">Goes out at once (quiet hours do not apply) and fills the customer name with "Test". ${cloud ? 'It arrives on the phone within a few seconds.' : 'In ' + esc(m[0].toLowerCase()) + ' it is only pretended: check it on the phone\'s timeline in Customers.'}</p>
+    ${g.provider === 'mock' && allow.length ? `<h3>Pretend the customer replied</h3><p class="hint">Practice mode only. Try "1" (price), "STOP", or a question, and see where it goes.</p>
+      <form data-form="simulate" class="row" data-pick="1"><select name="mobile">${phones}</select><input type="text" name="text" placeholder="What the customer writes" required><button type="submit">Pretend reply</button></form>` : ''}
+    <p class="hint">To test a whole campaign, the test phone must also be in the uploaded file: add a row with your own mobile to a copy of the CRM export.</p></section></div>
+  <section class="panel"><h3>3 · Connect the real WhatsApp (for IT, once)</h3>
+    <ol class="howto">
+      <li>In <b>Meta Business Suite</b> (business.facebook.com), use the Y.K. Almoayyed business and create a <b>WhatsApp Business account</b>. Add the phone number customers will see. It must not be in use on the WhatsApp app. To try first, Meta gives a free <b>test number</b> that can message up to 5 phones.</li>
+      <li>At <b>developers.facebook.com</b>, create an app of type <b>Business</b> and add the <b>WhatsApp</b> product. On WhatsApp → API Setup, copy the <b>Phone number ID</b> and the <b>WhatsApp Business Account ID</b>.</li>
+      <li>In Business Settings → Users → <b>System users</b>, create one and generate a <b>permanent token</b> with the permissions <span class="mono">whatsapp_business_messaging</span> and <span class="mono">whatsapp_business_management</span>.</li>
+      <li>In the app's Settings → Basic, copy the <b>App secret</b>. Invent a long random <b>verify token</b> (any text, kept private).</li>
+      <li>In <b>Vercel</b> → this project → Settings → Environment Variables, set the values below, then <b>Redeploy</b>.</li>
+      <li>In the Meta app → WhatsApp → <b>Configuration</b>, set the Callback URL to <span class="mono">${esc(hook)}</span> and the same verify token, then subscribe to <span class="mono">messages</span> and <span class="mono">message_template_status_update</span>. Meta must be able to reach this address: Vercel Authentication (Deployment Protection) blocks it, so IT turns that off for production or moves the app to a company server.</li>
+      <li>Back here: press <b>Test connection</b>, then sync the messages on the Templates screen, then send a test message to your phone (step 2).</li>
+      <li>Submit the message wording to Meta for approval (Templates → Export bodies to submit). Meta usually answers within a day.</li></ol>
+    ${table([{ h: 'Environment variable', html: r => `<span class="mono">${r[0]}</span>` }, { h: 'What it is', v: r => r[1] }, { h: 'Now', html: r => r[2] }], [
+      ['WA_PROVIDER', 'cloud to send for real (now: ' + g.provider + ')', cloud ? '<span class="pill live">cloud</span>' : `<span class="pill">${esc(g.provider)}</span>`],
+      ['WA_ACCESS_TOKEN', 'the permanent system-user token', ok(g.connection.WA_ACCESS_TOKEN)], ['WA_PHONE_NUMBER_ID', 'Phone number ID', ok(g.connection.WA_PHONE_NUMBER_ID)],
+      ['WA_WABA_ID', 'WhatsApp Business Account ID', ok(g.connection.WA_WABA_ID)], ['WA_APP_SECRET', 'App secret (checks that webhooks really come from Meta)', ok(g.connection.WA_APP_SECRET)],
+      ['WA_VERIFY_TOKEN', 'the verify token you invented', ok(g.connection.WA_VERIFY_TOKEN)], ['PUBLIC_URL', 'this site\'s address, e.g. ' + location.origin, ok(g.connection.PUBLIC_URL)]])}
+    ${admin ? '<div class="row"><button data-act="testConn">Test connection</button><span id="connResult" class="hint"></span></div>' : ''}
+    <p class="hint">The token and secret are typed only into Vercel, never on this screen or in an email. Details for IT: docs/INTEGRATION.md and docs/GO-LIVE-CHECKLIST.md in the code.</p></section>`;
 };
 
 /* import */
@@ -135,7 +229,8 @@ screens.import = async () => {
 };
 
 screens.imports = async id => {
-  const p = await api('GET', '/api/imports/' + id);
+  const [p, g] = await Promise.all([api('GET', '/api/imports/' + id), api('GET', '/api/guide')]);
+  const others = g.approvers.filter(u => u.id !== ME.user.id);
   const s = p.import.summary, total = Math.max(1, s.send + s.holdout + s.meta + s.excluded);
   const w = n => (n / total * 100).toFixed(2);
   const exRows = Object.entries(s.exCount).filter(([, n]) => n).map(([k, n]) => ({ k, n, label: (p.excluded.find(x => x.ex_reason === k) || {}).ex_label || k }));
@@ -146,14 +241,16 @@ screens.imports = async id => {
   <div class="grid2"><section class="panel"><h3>Buckets</h3>${table([{ h: 'Bucket', v: r => BUCKET[r[0]] || r[0] }, { h: 'To message', num: 1, v: r => fmt(r[1].send) }, { h: 'Holdout', num: 1, v: r => fmt(r[1].hold) }], Object.entries(s.bucketCount))}</section>
   <section class="panel"><h3>Why leads were left out</h3>${table([{ h: 'Reason', v: r => r.label }, { h: 'Leads', num: 1, v: r => fmt(r.n) }], exRows, 'Nobody was excluded.')}
   <div class="row"><a class="btn" href="/api/imports/${id}/export/send">Send list CSV</a><a class="btn" href="/api/imports/${id}/export/holdout">Holdout CSV</a><a class="btn" href="/api/imports/${id}/export/meta">Meta audience CSV</a><a class="btn" href="/api/imports/${id}/export/excluded">Excluded CSV</a></div></section></div>
-  ${can('campaign.build') ? `<form class="panel" data-form="buildCampaign" data-import="${id}"><h3>Build a campaign from this import</h3>
-    <div class="grid3"><label class="f">Name<input type="text" name="name" value="${esc(p.import.file_name.replace(/\.\w+$/, ''))} — ${todayBH()}" required></label>
-    <label class="f">Day 0 (Bahrain date)<input type="date" name="startDate" min="${todayBH()}" value="${todayBH()}" required></label>
-    <div class="row"><button class="primary" type="submit">Create draft</button></div></div>
-    <p class="hint">The draft then needs a second person to approve it before it can start.</p></form>` : ''}
+  ${can('campaign.build') ? `<form class="panel" data-form="buildCampaign" data-import="${id}"><h3>Build a campaign from this file</h3>
+    <div class="steps"><span class="now">1 You build it</span><span>2 ${esc(names(others))} approves</span><span>3 Someone presses Start sending</span><span>4 Messages go out</span></div>
+    <div class="grid3"><label class="f">Campaign name<input type="text" name="name" value="${esc(p.import.file_name.replace(/\.\w+$/, ''))} — ${todayBH()}" required></label>
+    <label class="f">First message goes out on<input type="date" name="startDate" min="${todayBH()}" value="${todayBH()}" required>
+      <span class="fieldhint">This is "Day 0": the first WhatsApp goes at ${esc(g.sendTime)} Bahrain time that day. Reminders follow 2, 7 and 30 days later, only to people who have not replied.</span></label>
+    <div class="row"><button class="primary" type="submit">Create and send for approval</button></div></div>
+    <p class="hint">Nothing is sent yet. ${others.length ? esc(names(others)) + (others.length > 1 ? ' can' : ' must') + ' approve it' : 'Someone else must approve it, but nobody else can yet: add a marketing user on the Users screen'}. You cannot approve your own campaign.</p></form>` : ''}
   <section class="panel"><h3>Ready to message (first ${Math.min(p.send.length, 50)})</h3>
   ${table([{ h: 'Mobile', v: r => r.mobile }, { h: 'Customer', v: r => r.name }, { h: 'Brand', v: r => r.brand }, { h: 'Model', v: r => r.model }, { h: 'Bucket', v: r => BUCKET[r.bucket] || r.bucket },
-    { h: 'Track', v: r => r.track === 'permission' ? 'Permission first' : 'Standard' }, { h: 'Day 0 template', html: r => `<span class="mono">${esc(r.tpl_name)}</span>` }, { h: 'Salesperson', v: r => r.sales }], p.send.slice(0, 50))}</section>`;
+    { h: 'Track', v: r => r.track === 'permission' ? 'Permission first' : 'Standard' }, { h: 'First message', html: r => `<span class="mono">${esc(r.tpl_name)}</span>` }, { h: 'Salesperson', v: r => r.sales }], p.send.slice(0, 50))}</section>`;
 };
 
 /* campaigns */
@@ -161,33 +258,48 @@ screens.campaigns = async id => {
   if (id) return campaignDetail(id);
   const list = await api('GET', '/api/campaigns');
   return `<div class="row between"><h2>Campaigns</h2><a class="btn" href="#/import">New: import a file</a></div>
-  ${table([{ h: 'Campaign', html: r => `<a href="#/campaigns/${r.id}">${esc(r.name)}</a>` }, { h: 'Status', html: r => pill(r.status) }, { h: 'Day 0', v: r => dd(r.start_date) },
+  ${table([{ h: 'Campaign', html: r => `<a href="#/campaigns/${r.id}">${esc(r.name)}</a>` }, { h: 'Status', html: r => pill(r.status) }, { h: 'First message', v: r => dd(r.start_date) },
     { h: 'Built by', v: r => r.created_by_name }, { h: 'Approved by', v: r => r.approved_by_name || '—' }, { h: 'Customers', num: 1, v: r => fmt(r.enrolled) }], list, 'No campaigns yet. Import a file to build one.')}`;
 };
 async function campaignDetail(id) {
-  const d = await api('GET', '/api/campaigns/' + id), c = d.campaign;
+  const [d, g] = await Promise.all([api('GET', '/api/campaigns/' + id), api('GET', '/api/guide')]), c = d.campaign;
   const order = ['draft', 'pending_approval', 'approved', 'running', 'completed'];
-  const at = order.indexOf(c.status);
-  const steps = order.map((s, i) => `<span class="${i < at ? 'done' : i === at ? 'now' : ''}">${esc(STATUS[s][0])}</span>`).join('');
+  const LBL = ['1 Built', '2 Approved by a second person', '3 Ready to start', '4 Sending', '5 Finished'];
+  const at = c.status === 'paused' ? 3 : order.indexOf(c.status);
+  const steps = LBL.map((l, i) => `<span class="${i < at ? 'done' : i === at ? 'now' : ''}">${esc(i === 1 && at <= 1 ? '2 Waiting for a second person' : l)}</span>`).join('');
   const mine = c.created_by === ME.user.id;
+  const others = g.approvers.filter(u => u.id !== c.created_by);
   const btn = (act, label, cls) => `<button class="${cls || ''}" data-act="camp" data-do="${act}" data-id="${c.id}">${label}</button>`;
   const controls = [];
-  if (c.status === 'draft' && (mine || ME.user.role === 'admin')) controls.push(btn('submit', 'Submit for approval', 'primary'));
-  if (c.status === 'pending_approval' && can('campaign.approve')) controls.push(mine ? '<span class="hint">You built this campaign, so someone else must approve it.</span>' : btn('approve', 'Approve', 'primary') + btn('reject', 'Send back'));
-  if (c.status === 'approved' && can('campaign.control')) controls.push(btn('start', 'Start the campaign', 'primary'));
-  if (c.status === 'running' && can('campaign.control')) controls.push(btn('pause', 'Pause'));
+  if (c.status === 'draft' && (mine || ME.user.role === 'admin')) controls.push(btn('submit', 'Send for approval', 'primary'));
+  if (c.status === 'pending_approval' && can('campaign.approve') && !mine) controls.push(btn('approve', 'Approve', 'primary') + btn('reject', 'Send back with a note'));
+  if (c.status === 'approved' && can('campaign.control')) controls.push(btn('start', 'Start sending', 'primary'));
+  if (c.status === 'running' && can('campaign.control')) controls.push('<button class="primary" data-act="runDue">Send due messages now</button>' + btn('pause', 'Pause'));
   if (c.status === 'paused' && can('campaign.control')) controls.push(btn('resume', 'Resume', 'primary'));
-  if (['running', 'paused'].includes(c.status) && can('campaign.control')) controls.push(btn('complete', 'Mark completed'));
+  if (['running', 'paused'].includes(c.status) && can('campaign.control')) controls.push(btn('complete', 'Mark finished'));
   if (!['completed', 'cancelled'].includes(c.status) && can('campaign.control')) controls.push(btn('cancel', 'Cancel campaign', 'danger'));
-  const s = d.statuses, f = d.funnel, sum = d.import ? d.import.summary : {};
-  const waiting = d.waiting.test_mode || d.waiting.template ? `<div class="banner warn">${d.waiting.test_mode ? `${fmt(d.waiting.test_mode)} customers are due but waiting for go-live (test mode). ` : ''}${d.waiting.template ? `${fmt(d.waiting.template)} are waiting for template approval: ${d.waiting.templates.map(esc).join(', ')}.` : ''}</div>` : '';
+  const nowBH = new Date().toLocaleTimeString('en-GB', { ...BH, hour: '2-digit', minute: '2-digit', hour12: false });
+  const when = c.start_date === todayBH() && nowBH >= g.sendTime ? `today (${dd(c.start_date)}): it is already past ${esc(g.sendTime)}, so they go as soon as it starts, outside quiet hours` : c.start_date < todayBH() ? `${dd(c.start_date)} (already begun)` : `${dd(c.start_date)} at ${esc(g.sendTime)} Bahrain time`;
+  const test = g.goLive ? '' : ` <b>Test mode is on:</b> ${g.allowlist === 1 ? 'only the 1 test phone receives' : 'only the ' + plural(g.allowlist, 'test phone') + ' receive'} anything; every other customer waits until an admin turns on Go live.`;
+  const NEXT = {
+    draft: mine || ME.user.role === 'admin' ? 'Not sent for approval yet. Press <b>Send for approval</b>.' : `${esc(c.created_by_name)} built it and still has to send it for approval.`,
+    pending_approval: mine ? `Waiting for <b>${esc(names(others))}</b> to approve it. You cannot approve your own campaign: send them the link to this page.`
+      : can('campaign.approve') ? 'Your turn: check the numbers and the file below (and the wording on the Templates screen), then press <b>Approve</b> or <b>Send back with a note</b>.' : `Waiting for ${esc(names(others))} to approve it.`,
+    approved: `Approved by ${esc(c.approved_by_name)}. Press <b>Start sending</b>. The first messages go out on ${when}.${test}`,
+    running: `Sending. First messages on ${when}; reminders 2, 7 and 30 days later to anyone who has not replied. The system sends due messages by itself; <b>Send due messages now</b> does it straight away.${test}`,
+    paused: 'Paused: nothing goes out until someone presses <b>Resume</b>.',
+    completed: 'Finished. Replies still reach the Inbox. See Results to compare messaged customers with the holdout.',
+    cancelled: 'Cancelled. Nothing more is sent.'
+  };
+  const sum0 = d.import ? d.import.summary : {}, s = d.statuses, f = d.funnel;
   return `<div class="row between"><h2>${esc(c.name)}</h2>${pill(c.status)}</div>
   <div class="steps">${steps}</div>
-  ${c.note ? `<div class="banner warn">Sent back: ${esc(c.note)}</div>` : ''}${waiting}
-  <section class="panel"><dl class="kv"><dt>Day 0</dt><dd>${dd(c.start_date)} (Bahrain)</dd><dt>From</dt><dd><a href="#/imports/${c.import_id}">${esc(d.import && d.import.file_name)}</a> · ${fmt(sum.send)} to message, ${fmt(sum.holdout)} holdout</dd>
-    <dt>Built by</dt><dd>${esc(c.created_by_name)} · ${dt(c.created_at)}</dd><dt>Approved by</dt><dd>${c.approved_by_name ? esc(c.approved_by_name) + ' · ' + dt(c.approved_at) : '—'}</dd>
-    <dt>Started</dt><dd>${dt(c.started_at)}</dd><dt>Template language</dt><dd class="mono">${esc(c.language)}</dd></dl>
-    <div class="row">${controls.join('')}</div></section>
+  <div class="next"><b class="h">What happens now</b>${NEXT[c.status] || ''}<div class="row nextbtns">${controls.join('')}</div></div>
+  ${c.note ? `<div class="banner warn">Sent back: ${esc(c.note)}</div>` : ''}
+  ${d.waiting.test_mode || d.waiting.template ? `<div class="banner warn">${d.waiting.test_mode ? `${fmt(d.waiting.test_mode)} customers are due but waiting for Go live (test mode). ` : ''}${d.waiting.template ? `${fmt(d.waiting.template)} are waiting for Meta to approve: ${d.waiting.templates.map(esc).join(', ')}.` : ''}</div>` : ''}
+  <section class="panel"><dl class="kv"><dt>First message (Day 0)</dt><dd>${when}</dd><dt>From file</dt><dd><a href="#/imports/${c.import_id}">${esc(d.import && d.import.file_name)}</a> · ${fmt(sum0.send)} to message, ${fmt(sum0.holdout)} holdout (not messaged, for comparison)</dd>
+    <dt>Built by</dt><dd>${esc(c.created_by_name)} · ${dt(c.created_at)}</dd><dt>Approved by</dt><dd>${c.approved_by_name ? esc(c.approved_by_name) + ' · ' + dt(c.approved_at) : 'not yet · can approve: ' + esc(names(others))}</dd>
+    <dt>Started</dt><dd>${dt(c.started_at)}</dd><dt>Message language</dt><dd class="mono">${esc(c.language)}</dd></dl></section>
   ${c.status === 'draft' || c.status === 'pending_approval' || c.status === 'approved' ? '' : `
   <div class="tiles">${tile('In sequence', (s.active || 0) + (s.queued || 0), 'waiting or active', 'send')}${tile('With sales', (s.handover || 0) + (s.done || 0), 'handed over')}${tile('Opted out', s.optout || 0, '', 'hold')}${tile('No reply', s.quiet || 0, '3 unanswered')}${tile('Not delivered', s.failed || 0, '', 'bad')}${tile('Holdout', s.holdout || 0, 'never messaged', 'hold')}</div>
   <div class="grid2"><section class="panel"><h3>Templates sent</h3>${table([{ h: 'Status', html: r => pill(r[0]) }, { h: 'Messages', num: 1, v: r => fmt(r[1]) }], Object.entries(f), 'Nothing sent yet.')}
@@ -307,7 +419,7 @@ screens.settings = async () => {
     <div class="banner ${v.go_live ? 'good' : 'warn'}">${v.go_live ? 'LIVE: customers in running campaigns can receive messages.' : 'TEST MODE: only allow-listed numbers can receive anything.'}</div>
     ${admin ? `<div class="row">${v.go_live ? '<button data-act="golive" data-on="0">Back to test mode</button>' : '<button class="primary" data-act="golive" data-on="1">Go live…</button>'}
       ${v.kill_switch ? '<button data-act="kill" data-on="0">Release kill switch</button>' : '<button class="danger" data-act="kill" data-on="1">Kill switch: stop all sending</button>'}</div>` : '<p class="hint">Only an admin changes these.</p>'}
-    <h3>WhatsApp connection</h3><dl class="kv"><dt>Provider</dt><dd>${esc(s.provider)}</dd><dt>Graph API version</dt><dd class="mono">${esc(s.graphVersion)}</dd><dt>Phone number ID</dt><dd class="mono">${esc(s.phoneNumberId || '—')}</dd>
+    <h3>WhatsApp connection</h3><p class="hint"><a href="#/connect">Connect WhatsApp</a> has the step-by-step set-up, the test phones and a test message.</p><dl class="kv"><dt>Provider</dt><dd>${esc(s.provider)}</dd><dt>Graph API version</dt><dd class="mono">${esc(s.graphVersion)}</dd><dt>Phone number ID</dt><dd class="mono">${esc(s.phoneNumberId || '—')}</dd>
       <dt>WhatsApp Business account ID</dt><dd class="mono">${esc(s.wabaId || '—')}</dd><dt>Webhook URL</dt><dd class="mono">${esc((s.publicUrl || location.origin) + s.webhookPath)}</dd></dl>
     ${admin ? '<div class="row"><button data-act="testConn">Test WhatsApp connection</button><span id="connResult" class="hint"></span></div>' : ''}
     <p class="hint">Credentials are set by IT in the server environment (docs/INTEGRATION.md), never on this screen.</p></section>
@@ -317,7 +429,7 @@ screens.settings = async () => {
     ${box('friday_skip')}
     <p class="hint">Changing the holdout % or key mid-pilot moves customers between groups and spoils the comparison.</p>
     ${admin ? '<div class="row"><button class="primary" type="submit">Save</button></div>' : ''}</form></div>
-  <section class="panel"><h3>Dead letters · ${fmt(dl.length)}</h3><p class="hint">Messages that kept failing for temporary reasons, or were interrupted mid-send. Check the customer's timeline before retrying.</p>
+  <section class="panel"><h3>Failed messages · ${fmt(dl.length)}</h3><p class="hint">Messages that kept failing for temporary reasons, or were interrupted mid-send. Check the customer's timeline before retrying.</p>
     ${table([{ h: 'When', v: r => dt(r.created_at) }, { h: 'Mobile', html: r => `<a class="mono" href="#/customers/${encodeURIComponent(r.mobile)}">${esc(r.mobile)}</a>` }, { h: 'What', v: r => r.tpl_name || r.kind }, { h: 'Why', v: r => r.reason },
       { h: '', html: r => can('deadletter.retry') ? `<button data-act="dl" data-do="retry" data-id="${r.id}">Retry</button> <button class="ghost" data-act="dl" data-do="discard" data-id="${r.id}">Discard</button>` : '' }], dl, 'None.')}</section>`;
 };
@@ -344,6 +456,14 @@ async function go(hash) { if (location.hash === hash) render(); else location.ha
 const acts = {
   logout: async () => { await api('POST', '/api/logout'); ME = null; showLogin(); },
   kill: async el => { const on = el.dataset.on === '1'; if (on && !confirm('Stop all sending now?')) return; await api('POST', '/api/system/kill', { on }); toast(on ? 'Kill switch on. Nothing will be sent.' : 'Kill switch released.'); render(); },
+  theme: async el => { const t = el.dataset.t; try { localStorage.setItem('theme', t); } catch { /* storage blocked */ }
+    if (t === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', t); themeButtons(); },
+  runDue: async () => {
+    const r = await api('POST', '/api/system/run-due');
+    const WHY = { 'before the send time': 'it is before the daily send time (Settings)', 'quiet hours': 'it is quiet hours', Friday: 'it is Friday', 'kill switch': 'the kill switch is on', 'sending halted': 'sending is halted (Settings)', 'daily cap reached': 'the daily limit is reached' };
+    const q = r.scheduler ? r.scheduler.enqueued : 0, sent = r.outbox ? r.outbox.sent : 0, why = r.scheduler && r.scheduler.skipped;
+    toast(why && !sent ? `Nothing sent: ${WHY[why] || why}. It goes out by itself when that ends.` : `${plural(q, 'new message')} queued, ${plural(sent, 'message')} sent.`); render();
+  },
   golive: async el => {
     const on = el.dataset.on === '1';
     if (on && prompt('Going live lets running campaigns message real customers. Type GO LIVE to confirm.') !== 'GO LIVE') return;
@@ -354,9 +474,10 @@ const acts = {
   camp: async el => {
     const a = el.dataset.do; let note;
     if (a === 'cancel' && !confirm('Cancel this campaign? Queued messages are dropped.')) return;
-    if (a === 'start' && !confirm('Start the campaign? Messages go out from Day 0 at the send time' + (ME.goLive ? '.' : ' (test mode: allow-listed numbers only).'))) return;
+    if (a === 'start' && !confirm('Start sending? Messages go out from the first-message date at the send time' + (ME.goLive ? ' to real customers.' : ' (test mode: only test phones receive them).'))) return;
+    if (a === 'approve' && !confirm('Approve this campaign? Anyone with marketing or admin rights can then start it.')) return;
     if (a === 'reject') { note = prompt('What needs changing?'); if (note == null) return; }
-    await api('POST', `/api/campaigns/${el.dataset.id}/${a}`, { note }); toast('Done.'); render();
+    await api('POST', `/api/campaigns/${el.dataset.id}/${a}`, { note }); toast({ submit: 'Sent for approval.', approve: 'Approved.', reject: 'Sent back.', start: 'Started.', pause: 'Paused.', resume: 'Resumed.', complete: 'Finished.', cancel: 'Cancelled.' }[a] || 'Done.'); render();
   },
   sync: async () => { const r = await api('POST', '/api/templates/sync'); toast(`Synced ${r.total} templates, ${r.approved} approved.`); render(); },
   resolve: async el => { const note = prompt('Outcome (optional, e.g. "booked a test drive")') ; if (note === null) return; await api('POST', `/api/inbox/${el.dataset.id}/resolve`, { note }); toast('Resolved.'); go('#/inbox'); },
@@ -375,9 +496,19 @@ const forms = {
     const map = {}; UPLOAD.fields.forEach(x => { if (f[x.key].value) map[x.key] = f[x.key].value; });
     const r = await api('POST', '/api/imports', { uploadId: UPLOAD.uploadId, map }); UPLOAD = null; go('#/imports/' + r.importId);
   },
-  buildCampaign: async f => { const c = await api('POST', '/api/campaigns', { importId: Number(f.dataset.import), name: f.name.value, startDate: f.startDate.value }); go('#/campaigns/' + c.id); },
+  buildCampaign: async f => {
+    const c = await api('POST', '/api/campaigns', { importId: Number(f.dataset.import), name: f.name.value, startDate: f.startDate.value });
+    try { await api('POST', `/api/campaigns/${c.id}/submit`, {}); toast('Created and sent for approval.'); } catch (e) { toast('Created as a draft, not yet sent for approval: ' + e.message, true); }
+    go('#/campaigns/' + c.id);
+  },
+  testMessage: async f => {
+    const out = $('#testResult'); out.innerHTML = '<p class="hint">Sending…</p>';
+    const r = await api('POST', '/api/test-message', { mobile: f.mobile.value, template: f.template.value });
+    out.innerHTML = `<div class="banner ${['sent', 'delivered', 'read', 'accepted'].includes(r.status) ? 'good' : r.status === 'queued' || r.status === 'sending' ? 'steel' : 'bad'}">${esc((STATUS[r.status] || [r.status])[0])}${r.outcome ? ': ' + esc(r.outcome) : ''}.
+      ${r.provider === 'cloud' ? 'Check the phone.' : 'Practice mode: no phone received it.'} <a href="#/customers/${encodeURIComponent(f.mobile.value)}">See the timeline</a></div>`;
+  },
   reply: async f => { await api('POST', `/api/inbox/${f.dataset.id}/reply`, { body: f.body.value }); toast('Queued. It goes out within a few seconds.'); setTimeout(render, 2500); },
-  simulate: async f => { await api('POST', '/api/dev/simulate-reply', { mobile: f.dataset.mobile, text: f.text.value }); render(); },
+  simulate: async f => { const mobile = f.dataset.mobile || f.mobile.value; await api('POST', '/api/dev/simulate-reply', { mobile, text: f.text.value }); if (f.dataset.pick) { toast('Reply received. Opening the timeline.'); go('#/customers/' + encodeURIComponent(mobile)); } else render(); },
   search: async f => {
     sessionStorage.setItem('q', f.q.value);
     const rows = await api('GET', '/api/customers?q=' + encodeURIComponent(f.q.value));
@@ -386,7 +517,7 @@ const forms = {
   erase: async f => { await api('POST', `/api/customers/${encodeURIComponent(f.dataset.mobile)}/erase`, { confirm: f.confirm.value }); toast('Erased. The opt-out (if any) is kept.'); go('#/customers'); },
   optout: async f => { if (!confirm('Add to the opt-out list? This cannot be undone.')) return; await api('POST', '/api/optouts', { mobile: f.mobile.value }); render(); },
   suppress: async f => { const r = await api('POST', '/api/suppressions', { list: f.dataset.list, mobiles: f.mobiles.value.split(/[\s,;]+/).filter(Boolean) }); toast(`${r.added} added${r.invalid ? `, ${r.invalid} not valid Bahrain mobiles` : ''}.`); render(); },
-  allow: async f => { await api('POST', '/api/allowlist', { mobile: f.mobile.value, note: f.note.value }); render(); },
+  allow: async f => { await api('POST', '/api/allowlist', { mobile: f.mobile.value, note: f.note.value }); toast('Test phone added.'); render(); },
   settings: async f => {
     const body = {};
     f.querySelectorAll('input[name]').forEach(i => { body[i.name] = i.type === 'checkbox' ? i.checked : i.value; });
@@ -444,5 +575,6 @@ async function render() {
   }
 }
 window.addEventListener('hashchange', () => { window.scrollTo(0, 0); render(); });
+themeButtons();
 render();
 })();

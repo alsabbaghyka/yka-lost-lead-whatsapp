@@ -125,3 +125,34 @@ test('upload the CRM lost-lead export layout: Notes1..3 joined as the reason, th
   assert.equal(imp.summary.bucketCount.competitor.send + imp.summary.bucketCount.competitor.hold, 1);
   assert.equal(imp.summary.bucketCount.price.send + imp.summary.bucketCount.price.hold, 1);
 });
+
+test('the set-up guide reports what is set, never a secret value, and who can approve', async () => {
+  const s = await login('view@t.local', 'viewer password 123');
+  const g = await (await api(s, 'GET', '/api/guide')).json();
+  assert.equal(g.provider, 'mock');
+  assert.equal(g.connection.WA_ACCESS_TOKEN, false, 'mock: no token, and the random local secrets are not reported as set');
+  assert.equal(g.connection.WA_APP_SECRET, false);
+  assert.ok(!JSON.stringify(g).includes(sys.ctx.cfg.appSecret), 'the secret itself never appears');
+  assert.deepEqual(g.approvers.map(u => u.name), ['Admin'], 'viewers cannot approve');
+  assert.ok(g.approvedTemplates > 0 && g.totalTemplates >= g.approvedTemplates);
+  assert.ok(g.testTemplates.every(t => !/nudge|voucher|monthly/.test(t.key)), 'draft templates are not offered for a test');
+});
+
+test('a test message goes only to a test phone, at once, and is not counted as automated', async () => {
+  const s = await login('admin@t.local', 'admin password 123');
+  const notTest = await api(s, 'POST', '/api/test-message', { mobile: '39998877', template: 'lost_lead_ask_reason_v1' });
+  assert.equal(notTest.status, 400);
+  assert.match((await notTest.json()).error, /test phones/);
+  assert.equal((await api(s, 'POST', '/api/allowlist', { mobile: '39998877', note: 'IT phone' })).status, 200);
+  const draft = await api(s, 'POST', '/api/test-message', { mobile: '39998877', template: 'lost_lead_nudge_v1' });
+  assert.equal(draft.status, 400, 'a draft template is not approved');
+  const r = await api(s, 'POST', '/api/test-message', { mobile: '39998877', template: 'lost_lead_ask_reason_v1' });
+  assert.equal(r.status, 200);
+  const b = await r.json();
+  assert.ok(['sent', 'accepted', 'delivered', 'read'].includes(b.status), b.status + ' ' + b.outcome);
+  const m = await sys.ctx.db.prepare('SELECT automated, body, vars FROM messages WHERE id = ?').get(b.id);
+  assert.equal(m.automated, 0);
+  assert.match(m.body, /^Hi Test,/);
+  const viewer = await login('view@t.local', 'viewer password 123');
+  assert.equal((await api(viewer, 'POST', '/api/test-message', { mobile: '39998877' })).status, 403);
+});

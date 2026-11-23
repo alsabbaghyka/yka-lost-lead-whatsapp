@@ -19,6 +19,7 @@ const Customers = require('../services/customers');
 const Results = require('../services/results');
 const Exports = require('../services/exports');
 const Sender = require('../services/sender');
+const Tpl = require('../rules/templates');
 const { audit, listAudit } = require('../audit');
 const { log } = require('../mask');
 
@@ -222,6 +223,40 @@ function createApp(ctx) {
   });
   r('POST', '/api/system/resume-sending', { perm: 'deadletter.retry' }, async ({ user }) => { await Sender.resume(ctx, user); return { ok: true }; });
   r('POST', '/api/settings/test-connection', { perm: 'settings.edit' }, async ({ user }) => { const out = await ctx.provider.testConnection(); await audit(ctx.db, user, 'connection.test', ctx.provider.name, { ok: out.ok, detail: out.detail }); return out; });
+  /* where the set-up stands, for the Start here and Connect WhatsApp screens (never a secret, only whether it is set) */
+  r('GET', '/api/guide', { perm: 'view' }, async () => {
+    const s = await Settings.all(ctx.db), cfg = ctx.cfg;
+    const q = async (sql, ...a) => (await ctx.db.prepare(sql).get(...a)).n;
+    const [approvedTemplates, allowlist, imports, campaigns, users] = await Promise.all([
+      q("SELECT COUNT(*) n FROM templates WHERE status = 'APPROVED'"), q('SELECT COUNT(*) n FROM allowlist'), q('SELECT COUNT(*) n FROM imports'),
+      ctx.db.prepare('SELECT status, COUNT(*) n FROM campaigns GROUP BY status').all(), Auth.listUsers(ctx.db)]);
+    const cloud = cfg.provider === 'cloud';
+    return { provider: cfg.provider, goLive: s.go_live, killSwitch: s.kill_switch, sendTime: s.send_time, fridaySkip: s.friday_skip, quietStart: s.quiet_start, quietEnd: s.quiet_end,
+      approvedTemplates, totalTemplates: Tpl.CATALOGUE.length, allowlist, imports, campaigns: Object.fromEntries(campaigns.map(c => [c.status, c.n])),
+      approvers: users.filter(u => u.active && Auth.can(u, 'campaign.approve')).map(u => ({ id: u.id, name: u.name, role: u.role })),
+      connection: { WA_PROVIDER: cfg.provider, WA_ACCESS_TOKEN: cloud && !!cfg.accessToken, WA_PHONE_NUMBER_ID: !!cfg.phoneNumberId, WA_WABA_ID: !!cfg.wabaId, WA_APP_SECRET: cloud && !!cfg.appSecret, WA_VERIFY_TOKEN: cloud && !!cfg.verifyToken, PUBLIC_URL: !!cfg.publicUrl },
+      webhookUrl: (cfg.publicUrl || '') + '/webhook', graphVersion: cfg.graphVersion,
+      testTemplates: Tpl.CATALOGUE.filter(t => !t.draft).map(t => ({ name: t.name, key: t.key })) };
+  });
+  /* one approved template to a phone on the test list, now (no quiet hours, not counted in the daily cap) */
+  r('POST', '/api/test-message', { perm: 'settings.edit' }, async ({ body, user }) => {
+    const mobile = cleanMobile(body.mobile);
+    if (!mobile) throw httpError(400, 'Not a valid Bahrain mobile');
+    if (!(await Opt.isAllowed(ctx.db, mobile))) throw httpError(400, 'Add this number to the test phones first (Opt-outs & lists → Test allow-list)');
+    const t = Tpl.templateByName(body.template || 'lost_lead_ask_reason_v1');
+    if (!t) throw httpError(400, 'Unknown template');
+    if (t.draft) throw httpError(400, 'That message is still draft wording; pick a signed-off one');
+    const lang = await Settings.get(ctx.db, 'template_language');
+    const a = await Templates.approval(ctx.db, t.name, lang);
+    if (!a.ok) throw httpError(400, `Template ${t.name} is not approved by Meta yet (${a.status}). Sync templates, or pick an approved one.`);
+    const cust = { name: 'Test', model: 'Test model', brand: await Settings.get(ctx.db, 'default_brand') };
+    const id = await Sender.enqueueTemplate(ctx, { mobile, key: 'test', tplName: t.name, language: lang, vars: Tpl.varValues(t.body.en, cust), body: Tpl.fill(t.body.en, cust),
+      idemKey: 'test:' + crypto.randomUUID(), automated: false });
+    await audit(ctx.db, user, 'test_message.send', null, { template: t.name, mobile });
+    if (ctx.runDue) await ctx.runDue({ force: false, budgetMs: 15000 });
+    const m = await ctx.db.prepare('SELECT status, outcome FROM messages WHERE id = ?').get(id);
+    return { id, status: m.status, outcome: m.outcome, provider: ctx.cfg.provider };
+  });
   r('GET', '/api/dead-letters', { perm: 'view' }, () => Sender.listDeadLetters(ctx.db));
   r('POST', '/api/dead-letters/:id/retry', { perm: 'deadletter.retry' }, async ({ p, user }) => { await Sender.retryDeadLetter(ctx, num(p.id), user); return { ok: true }; });
   r('POST', '/api/dead-letters/:id/discard', { perm: 'deadletter.retry' }, async ({ p, user }) => { await Sender.discardDeadLetter(ctx, num(p.id), user); return { ok: true }; });

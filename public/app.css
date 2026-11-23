@@ -102,7 +102,8 @@ tr.click{cursor:pointer} tr.click:hover td{background:var(--soft)}
 .notes{display:flex;flex-direction:column;gap:6px;font-size:12.5px;color:var(--muted)}
 .notes .warn{color:var(--warn);font-weight:600}
 .tplbody{font-family:var(--mono);font-size:12px;white-space:pre-wrap;background:var(--soft);border-radius:6px;padding:8px 10px;margin:0}
-.login{max-width:380px;margin:40px auto}
+.login{max-width:380px;margin:40px auto 0;width:100%}
+.login+.login{margin-top:0}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:var(--panel);padding:10px 16px;border-radius:8px;font-size:13px;font-weight:600;max-width:min(560px,calc(100vw - 32px));z-index:10}
 .toast.err{background:var(--bad);color:#fff}
 .foot{color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:12px}
@@ -112,3 +113,29 @@ tr.click{cursor:pointer} tr.click:hover td{background:var(--soft)}
 .steps span{padding:4px 9px;border-radius:999px;background:var(--soft);color:var(--muted);font-weight:600}
 .steps span.done{background:var(--good-soft);color:var(--good)}
 .steps span.now{background:var(--accent);color:#fff}
+
+/* theme switch */
+.topright{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:flex-end}
+.theme{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:2px;background:var(--panel)}
+.theme button{border:0;background:transparent;border-radius:999px;padding:4px 10px;font-size:12px;color:var(--muted)}
+.theme button[aria-pressed="true"]{background:var(--ink);color:var(--panel)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+/* Start here */
+.guide{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
+.guide li{display:grid;grid-template-columns:36px minmax(0,1fr);gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+.guide li.now{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.guide li.done{opacity:.8}
+.guide .num{width:32px;height:32px;border-radius:50%;display:grid;place-items:center;font-weight:800;background:var(--soft);color:var(--muted)}
+.guide li.now .num{background:var(--accent);color:#fff}
+.guide li.done .num{background:var(--good-soft);color:var(--good)}
+.guide p{margin:4px 0 8px;color:var(--muted)}
+.guide b.t{font-size:15px}
+.timeline{display:grid;grid-template-columns:max-content 1fr;gap:8px 14px;font-size:13px;margin:0}
+.timeline dt{font-weight:800;color:var(--accent);white-space:nowrap}
+.timeline dd{margin:0}
+.next{border-left:4px solid var(--accent);background:var(--accent-soft);border-radius:8px;padding:12px 14px;font-size:14px;line-height:1.55}
+.next b.h{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:2px}
+ol.howto{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:8px;font-size:13px}
+ol.howto li::marker{font-weight:800;color:var(--accent)}
+.fieldhint{font-size:12px;color:var(--muted);line-height:1.45}
+.nextbtns{margin-top:10px}
