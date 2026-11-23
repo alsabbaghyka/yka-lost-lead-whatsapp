@@ -58,7 +58,17 @@ async function boot({ env: e = env(), clock } = {}) {
   if (interrupted) log(`${interrupted} message(s) were left mid-send and went to dead letters for a person to check`);
   // the mock and dry-run providers approve the catalogue locally; the cloud provider is synced from the Templates screen
   if (cfg.provider !== 'cloud' && !(await db.prepare('SELECT 1 FROM templates LIMIT 1').get())) await Templates.sync(ctx, null);
-  if (cfg.bootstrapAdmin && !(await db.prepare('SELECT 1 FROM users LIMIT 1').get())) {
+  if (cfg.bootstrapAdmin && cfg.bootstrapAdmin.reset) {
+    // one-time repair where there is no command line: make this email an active admin with this
+    // password. Turn BOOTSTRAP_ADMIN_RESET off afterwards, or it re-applies on every cold start.
+    const b = cfg.bootstrapAdmin, now = new Date().toISOString();
+    const hash = Auth.hashPassword(b.password);
+    const existing = await db.prepare('SELECT id FROM users WHERE email = ?').get(b.email);
+    if (existing) await db.prepare("UPDATE users SET pw_hash = ?, role = 'admin', active = 1, name = ? WHERE id = ?").run(hash, b.name, existing.id);
+    else await db.prepare("INSERT INTO users(email, name, role, pw_hash, created_at) VALUES (?,?,'admin',?,?)").run(b.email, b.name, hash, now);
+    await audit(db, null, 'user.reset_by_environment', b.email, { created: !existing });
+    log('BOOTSTRAP_ADMIN_RESET applied for the admin in BOOTSTRAP_ADMIN_EMAIL; turn it off now');
+  } else if (cfg.bootstrapAdmin && !(await db.prepare('SELECT 1 FROM users LIMIT 1').get())) {
     try {
       const u = await Auth.createUser(db, { ...cfg.bootstrapAdmin, role: 'admin' });
       await audit(db, null, 'user.create', u.email, { role: 'admin', via: 'BOOTSTRAP_ADMIN_* environment' });

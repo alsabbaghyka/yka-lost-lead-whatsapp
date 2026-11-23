@@ -45,7 +45,7 @@ function loadConfig(env = process.env) {
     tursoUrl: e('TURSO_DATABASE_URL'),
     tursoToken: e('TURSO_AUTH_TOKEN'),
     // where there is no command line (Vercel): the first admin, created only while there are no users
-    bootstrapAdmin: e('BOOTSTRAP_ADMIN_EMAIL') && e('BOOTSTRAP_ADMIN_PASSWORD') ? { email: e('BOOTSTRAP_ADMIN_EMAIL'), name: e('BOOTSTRAP_ADMIN_NAME') || 'Admin', password: e('BOOTSTRAP_ADMIN_PASSWORD') } : null,
+    bootstrapAdmin: e('BOOTSTRAP_ADMIN_EMAIL') && e('BOOTSTRAP_ADMIN_PASSWORD') ? { email: e('BOOTSTRAP_ADMIN_EMAIL'), name: e('BOOTSTRAP_ADMIN_NAME') || 'Admin', password: e('BOOTSTRAP_ADMIN_PASSWORD'), reset: e('BOOTSTRAP_ADMIN_RESET') === '1' } : null,
     demo: e('DEMO_BANNER') === '1'
   };
   if (provider === 'cloud') {

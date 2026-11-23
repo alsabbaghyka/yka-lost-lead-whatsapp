@@ -75,7 +75,7 @@ function showLogin(msg) {
     <label class="f">Email<input type="email" name="email" autocomplete="username" required></label>
     <label class="f">Password<input type="password" name="password" autocomplete="current-password" required></label>
     <button class="primary" type="submit">Sign in</button>
-    <p class="hint">No account? An admin creates users. The first admin is created on the server: <span class="mono">node cli.js create-admin</span>.</p></form>`;
+    <p class="hint">No account? Ask an admin: users are added on the Users screen.</p></form>`;
 }
 
 /* ---------- screens ---------- */
