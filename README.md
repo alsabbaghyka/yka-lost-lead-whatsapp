@@ -68,6 +68,7 @@ docker compose exec app node cli.js create-admin --email it@example.com --name "
 | `docs/SECURITY.md` | Threat model, data held, retention, open legal points. |
 | `docs/META-API-NOTES.md` | The Meta API facts the connector relies on, with sources. |
 | `docs/openapi.yaml` | The REST API. |
+| `docs/VERCEL.md` | The Vercel test deployment: Turso database, request-driven work, first admin. |
 | `docs/PLAN.md` | The implementation plan this was built from. |
 
 ## Layout
