@@ -46,9 +46,9 @@ function loadConfig(env = process.env) {
     const missing = ['WA_ACCESS_TOKEN', 'WA_PHONE_NUMBER_ID', 'WA_WABA_ID', 'WA_APP_SECRET', 'WA_VERIFY_TOKEN'].filter(k => !e(k));
     if (missing.length) throw new Error('WA_PROVIDER=cloud needs ' + missing.join(', '));
   }
-  // mock and dry-run still verify webhook signatures: give them a local secret
-  if (!c.appSecret) c.appSecret = provider === 'cloud' ? '' : 'local-mock-app-secret';
-  if (!c.verifyToken) c.verifyToken = provider === 'cloud' ? '' : 'local-mock-verify-token';
+  // mock and dry-run still verify webhook signatures: a random secret per start, never a known string
+  if (!c.appSecret && provider !== 'cloud') c.appSecret = require('node:crypto').randomBytes(32).toString('hex');
+  if (!c.verifyToken && provider !== 'cloud') c.verifyToken = require('node:crypto').randomBytes(16).toString('hex');
   return c;
 }
 

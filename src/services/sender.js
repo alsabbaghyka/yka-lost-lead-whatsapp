@@ -47,9 +47,8 @@ function resume(ctx, user) {
 }
 
 /* ---------- daily cap: templates Meta accepted today (Bahrain day) ---------- */
-function dayBounds(now) { const d = C.bahrainDate(now); const s = C.bahrainInstant(d, '00:00'); return [new Date(s).toISOString(), new Date(s + 864e5).toISOString()]; }
 function templatesSentToday(ctx, now) {
-  const [a, b] = dayBounds(now);
+  const [a, b] = C.bahrainDayRange(now);
   return ctx.db.prepare("SELECT COUNT(*) n FROM messages WHERE dir='out' AND kind='template' AND sent_at >= ? AND sent_at < ?").get(a, b).n;
 }
 const windowOpen = (ctx, mobile, now) => { const c = ctx.db.prepare('SELECT last_inbound_at FROM customers WHERE mobile = ?').get(mobile); return !!(c && c.last_inbound_at && now - Date.parse(c.last_inbound_at) < WINDOW_MS); };
@@ -86,6 +85,19 @@ function setMsg(ctx, id, fields) {
   ctx.db.prepare(`UPDATE messages SET ${keys.map(k => k + ' = ?').join(', ')}, updated_at = ? WHERE id = ?`).run(...keys.map(k => fields[k]), ctx.nowIso(), id);
 }
 
+/** A queued automated template that is blocked before it leaves never reached the customer:
+    put the step back so the scheduler offers it again (and applies its own waits) instead of
+    counting it towards "3 unanswered". Only when it is still the enrollment's latest step. */
+function undoStep(ctx, m) {
+  if (m.kind !== 'template' || !m.automated || !m.enrollment_id) return;
+  const e = ctx.db.prepare('SELECT e.*, c.start_date FROM enrollments e JOIN campaigns c ON c.id = e.campaign_id WHERE e.id = ?').get(m.enrollment_id);
+  if (!e || e.last_tpl !== m.tpl_key || !['active', 'asked', 'quiet', 'queued'].includes(e.status)) return;
+  const tplCount = Math.max(0, e.tpl_count - 1);
+  const status = tplCount === 0 ? 'queued' : 'active';
+  ctx.db.prepare('UPDATE enrollments SET status = ?, tpl_count = ?, unanswered = MAX(0, unanswered - 1), next_key = ?, next_day = ?, updated_at = ? WHERE id = ?')
+    .run(status, tplCount, m.tpl_key, Math.max(0, C.dayIndex(e.start_date, ctx.clock.now()) + 1), ctx.nowIso(), e.id);
+}
+
 /** What a permanent failure means for the customer (shared with status webhooks). */
 function applyFailureEffects(ctx, m, err) {
   if (err.optout) require('./optouts').addOptout(ctx, m.mobile, { source: 'meta_131050', text: err.label });
@@ -109,7 +121,11 @@ async function processOutbox(ctx, { limit = 500 } = {}) {
   for (const m of rows) {
     const g = gate(ctx, m, s, now, capLeft);
     if (g.act === 'hold') { res.held++; continue; }
-    if (g.act === 'block' || g.act === 'cancel') { setMsg(ctx, m.id, { status: g.act === 'block' ? 'blocked' : 'cancelled', outcome: g.reason }); res.blocked++; continue; }
+    if (g.act === 'block' || g.act === 'cancel') {
+      setMsg(ctx, m.id, { status: g.act === 'block' ? 'blocked' : 'cancelled', outcome: g.reason });
+      if (g.act === 'block') undoStep(ctx, m);
+      res.blocked++; continue;
+    }
     if (tokens <= 0) break;
     tokens--; times.push(now);
     setMsg(ctx, m.id, { status: 'sending' });

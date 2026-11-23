@@ -48,8 +48,8 @@ function readSpreadsheet(buf, fileName = '') {
     body = grid.slice(1);
   }
   const seen = {}; names = names.map(n => seen[n] ? `${n} (${++seen[n]})` : (seen[n] = 1, n));
-  // plain objects without a prototype chain: header names like "__proto__" stay inert
-  const rows = body.map(r => { const o = Object.create(null); names.forEach((n, i) => o[n] = r[i] == null ? '' : r[i]); return Object.assign({}, Object.fromEntries(Object.entries(o))); });
+  // Object.fromEntries defines own data properties, so a header named "__proto__" stays an ordinary key
+  const rows = body.map(r => Object.fromEntries(names.map((n, i) => [n, r[i] == null ? '' : r[i]])));
   return { rows, names, headerless };
 }
 

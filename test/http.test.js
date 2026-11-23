@@ -101,3 +101,10 @@ test('settings: only an admin turns go-live on, and it is audited', async () => 
   assert.equal((await api(s, 'PUT', '/api/settings', { holdout_pct: 90 })).status, 400);
   await api(s, 'PUT', '/api/settings', { go_live: false });
 });
+
+test('Origin: "null" and other sites are refused; the reverse proxy\'s forwarded host is accepted', async () => {
+  const s = await login('admin@t.local', 'admin password 123');
+  assert.equal((await api(s, 'POST', '/api/system/kill', { on: false }, { Origin: 'null' })).status, 403);
+  assert.equal((await api(s, 'POST', '/api/system/kill', { on: false }, { Origin: 'https://lostlead.example', 'X-Forwarded-Host': 'evil.example' })).status, 403);
+  assert.equal((await api(s, 'POST', '/api/system/kill', { on: false }, { Origin: 'https://lostlead.example', 'X-Forwarded-Host': 'lostlead.example' })).status, 200);
+});

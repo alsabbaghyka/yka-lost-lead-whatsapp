@@ -30,6 +30,8 @@ function bahrainInstant(isoDate, hhmm) {
   const offsetMin = (Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute) - guess) / 6e4;
   return guess - offsetMin * 6e4;
 }
+/** [start, end) of the Bahrain calendar day containing ms, as ISO strings (for SQL comparisons). */
+function bahrainDayRange(ms) { const s = bahrainInstant(bahrainDate(ms), '00:00'); return [new Date(s).toISOString(), new Date(s + 864e5).toISOString()]; }
 /** Whole Bahrain calendar days from Day 0 (yyyy-mm-dd) to the instant ms. */
 const dayIndex = (startIso, ms) => Math.round((Date.parse(bahrainDate(ms) + 'T00:00:00Z') - Date.parse(startIso + 'T00:00:00Z')) / 864e5);
 const addDaysIso = (isoDate, n) => new Date(Date.parse(isoDate + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10);
@@ -41,4 +43,4 @@ function fakeClock(start) {
   return { now: () => t, advance: ms => { t += ms; return t; }, set: v => { t = typeof v === 'number' ? v : Date.parse(v); return t; } };
 }
 
-module.exports = { TZ, bahrainParts, bahrainDate, isFriday, weekdayOfDate, inQuietHours, bahrainInstant, dayIndex, addDaysIso, shortDate, systemClock, fakeClock };
+module.exports = { TZ, toMin, bahrainDayRange, bahrainParts, bahrainDate, isFriday, weekdayOfDate, inQuietHours, bahrainInstant, dayIndex, addDaysIso, shortDate, systemClock, fakeClock };

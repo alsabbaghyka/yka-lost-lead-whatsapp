@@ -41,8 +41,14 @@ function erase(ctx, mobile, user) {
     c.importRows = ctx.db.prepare('DELETE FROM import_leads WHERE mobile = ?').run(m).changes;
     c.outcomes = ctx.db.prepare('DELETE FROM outcome_events WHERE mobile = ?').run(m).changes;
     c.customer = ctx.db.prepare('DELETE FROM customers WHERE mobile = ?').run(m).changes;
-    // webhook payloads hold the number and the text: drop the processed ones for this number
-    c.webhookEvents = ctx.db.prepare("DELETE FROM webhook_events WHERE processed_at IS NOT NULL AND payload LIKE ?").run('%' + m.slice(1) + '%').changes;
+    // webhook payloads hold the number and the text. Unprocessed ones go too, or the worker would
+    // recreate the erased messages; an opt-out among them is honoured first so it is not lost.
+    for (const ev of ctx.db.prepare("SELECT payload FROM webhook_events WHERE processed_at IS NULL AND kind = 'message' AND payload LIKE ?").all('%' + m.slice(1) + '%')) {
+      const msg = JSON.parse(ev.payload).message || {};
+      const t = require('./conversation').inboundText(msg).text;
+      if (require('../rules/replies').isStop(t)) Opt.addOptout(ctx, m, { source: 'whatsapp_reply', text: t });
+    }
+    c.webhookEvents = ctx.db.prepare('DELETE FROM webhook_events WHERE payload LIKE ?').run('%' + m.slice(1) + '%').changes;
     return c;
   });
   audit(ctx.db, user, 'customer.erase', m, { ...counts, optOutKept: Opt.isOptedOut(ctx.db, m) });

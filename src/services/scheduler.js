@@ -13,19 +13,20 @@ const { stateOf, saveState, dateLabelFor } = require('./conversation');
 const { tx } = require('../db');
 
 function templatesQueuedToday(ctx, now) {
-  const d = C.bahrainDate(now), a = C.bahrainInstant(d, '00:00');
-  return ctx.db.prepare("SELECT COUNT(*) n FROM messages WHERE dir='out' AND kind='template' AND automated = 1 AND status NOT IN ('blocked','cancelled') AND created_at >= ? AND created_at < ?")
-    .get(new Date(a).toISOString(), new Date(a + 864e5).toISOString()).n;
+  const [a, b] = C.bahrainDayRange(now);
+  return ctx.db.prepare("SELECT COUNT(*) n FROM messages WHERE dir='out' AND kind='template' AND automated = 1 AND status NOT IN ('blocked','cancelled') AND created_at >= ? AND created_at < ?").get(a, b).n;
 }
-const toMin = hhmm => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
 
 /** @returns {{enqueued:number, skipped?:string}} */
 function tick(ctx) {
   const s = Settings.all(ctx.db), now = ctx.clock.now();
+  // nothing advances while sending is stopped, or steps would pile up and go out back-to-back on release
+  if (s.kill_switch) return { enqueued: 0, skipped: 'kill switch' };
+  if (Sender.halted(ctx)) return { enqueued: 0, skipped: 'sending halted' };
   if (s.friday_skip && C.isFriday(now)) return { enqueued: 0, skipped: 'Friday' };
   if (C.inQuietHours(now, { start: s.quiet_start, end: s.quiet_end })) return { enqueued: 0, skipped: 'quiet hours' };
   const p = C.bahrainParts(now);
-  if (p.hour * 60 + p.minute < toMin(s.send_time)) return { enqueued: 0, skipped: 'before the send time' };
+  if (p.hour * 60 + p.minute < C.toMin(s.send_time)) return { enqueued: 0, skipped: 'before the send time' };
   let capLeft = s.daily_cap - templatesQueuedToday(ctx, now);
   let enqueued = 0;
   const camps = ctx.db.prepare("SELECT * FROM campaigns WHERE status = 'running' ORDER BY id").all();
@@ -44,10 +45,11 @@ function tick(ctx) {
         const cust = ctx.db.prepare('SELECT * FROM customers WHERE id = ?').get(e.customer_id);
         const body = tpl.body.en;
         const id = Sender.enqueueTemplate(ctx, { mobile: e.mobile, customerId: e.customer_id, enrollmentId: e.id, key: e.next_key, tplName: tpl.name,
-          language: c.language || s.template_language, vars: T.varValues(body, cust), body: T.fill(body, cust), idemKey: `enr:${e.id}:t${e.tpl_count + 1}:${e.next_key}` });
+          language: c.language || s.template_language, vars: T.varValues(body, cust), body: T.fill(body, cust), idemKey: `enr:${e.id}:t${e.tpl_count + 1}:${e.next_key}:d${e.next_day}` });
+        if (!id) return; // already queued for this step and day: never advance without a message
         const r = Q.afterTemplate(stateOf(e), e.next_key, day, { dateLabel: dateLabelFor(c.start_date) });
         saveState(ctx, e.id, r.state);
-        if (id) { enqueued++; capLeft--; }
+        enqueued++; capLeft--;
       });
     }
   }

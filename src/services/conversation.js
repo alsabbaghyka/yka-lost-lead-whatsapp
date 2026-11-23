@@ -63,8 +63,8 @@ function onMessage(ctx, { message: m, contacts = [], metadata = {} }) {
     const e = cust ? ctx.db.prepare('SELECT * FROM enrollments WHERE customer_id = ? ORDER BY id DESC LIMIT 1').get(cust.id) : null;
     if (!e) {
       if (isStop(text)) {
-        Opt.addOptout(ctx, mobile, { source: 'whatsapp_reply', text });
-        if (cust) Sender.enqueueText(ctx, { mobile, body: 'You are unsubscribed. We will not message you again.', key: 'optout_confirm', automated: true });
+        const r = Opt.addOptout(ctx, mobile, { source: 'whatsapp_reply', text });
+        if (cust && r.added) Sender.enqueueText(ctx, { mobile, body: 'You are unsubscribed. We will not message you again.', key: 'optout_confirm', automated: true });
         return 'opt-out from someone not in a campaign';
       }
       return cust ? 'customer not in a campaign: kept on the timeline' : 'unknown sender: kept on the timeline';
@@ -73,6 +73,11 @@ function onMessage(ctx, { message: m, contacts = [], metadata = {} }) {
     const day = Math.max(0, C.dayIndex(camp.start_date, ctx.clock.now()));
     const r = Q.onReply(stateOf(e), text, day, { dateLabel: dateLabelFor(camp.start_date) });
     saveState(ctx, e.id, r.state);
+    // a person now has the customer (or they said no): their other campaigns stop too
+    if (['handover', 'declined'].includes(r.state.status) && r.state.status !== e.status) {
+      ctx.db.prepare("UPDATE enrollments SET status = ?, next_key = NULL, next_day = NULL, brief = ?, updated_at = ? WHERE customer_id = ? AND id <> ? AND status IN ('queued','active','asked')")
+        .run(r.state.status === 'declined' ? 'declined' : 'done', r.state.status === 'declined' ? 'Declined updates in another campaign' : `Stopped: with the salesperson from campaign ${camp.name}`, ctx.nowIso(), cust.id, e.id);
+    }
     for (const a of r.actions) {
       if (a.type === 'optout') Opt.addOptout(ctx, mobile, { source: 'whatsapp_reply', text });
       else if (a.type === 'handover') {

@@ -89,3 +89,11 @@ test('malformed JSON with a valid signature is acknowledged and logged, not retr
   assert.equal(db.prepare('SELECT COUNT(*) n FROM webhook_events').get().n, 0);
   assert.ok(db.prepare("SELECT 1 FROM audit WHERE action = 'webhook.malformed'").get());
 });
+
+test('a repeated STOP from someone not in a campaign gets one confirmation, not one per STOP', async () => {
+  const { ctx, db } = makeSystem();
+  db.prepare("INSERT INTO customers(mobile, first_seen, last_seen) VALUES ('+97339991000', 'x', 'x')").run();
+  for (const id of ['s1', 's2', 's3']) { const { raw, headers } = signed(ctx, P.inboundPayload({ from: '+97339991000', id: 'wamid.' + id, timestamp: 1, text: 'STOP' })); await W.receive(ctx, raw, headers); }
+  await W.processPending(ctx);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM messages WHERE dir='out' AND tpl_key='optout_confirm'").get().n, 1);
+});

@@ -154,11 +154,10 @@ test('STOP opts out instantly, across every campaign, and cancels what was queue
   const imp2 = Campaigns.createImport(s.ctx, { fileName: 'second.csv', rows: [row('39990004', 'Fatima', 'Price')], user: s.users.m1 });
   const c2 = Campaigns.createCampaign(s.ctx, { importId: imp2.importId, name: 'Second', startDate: '2026-12-02', user: s.users.m1 });
   Campaigns.submit(s.ctx, c2.id, s.users.m1); Campaigns.approve(s.ctx, c2.id, s.users.m2); Campaigns.start(s.ctx, c2.id, s.users.m1);
-  s.Settings.set(s.db, 'kill_switch', true); // hold the queue so something is still queued
-  await s.day('2026-12-02');
+  s.clock.set('2026-12-02T07:00:00Z');
+  Scheduler.tick(s.ctx); // queued, not yet sent
   const queued = s.db.prepare("SELECT COUNT(*) n FROM messages WHERE mobile='+97339990004' AND status='queued'").get().n;
-  assert.ok(queued >= 1);
-  s.Settings.set(s.db, 'kill_switch', false);
+  assert.equal(queued, 2, 'one per campaign');
   await s.reply('+97339990004', 'توقف');
   assert.ok(Opt.isOptedOut(s.db, '+97339990004'));
   assert.deepEqual(s.db.prepare("SELECT DISTINCT status FROM enrollments WHERE mobile='+97339990004'").all().map(r => r.status), ['optout']);
@@ -220,4 +219,51 @@ test('erasure removes the history but keeps the opt-out, and the number stays un
   const again = Campaigns.createImport(s.ctx, { fileName: 'again.csv', rows: ROWS, user: s.users.m1 });
   assert.equal(again.summary.exCount.optout, 1);
   assert.throws(() => Customers.erase(s.ctx, '+97339990002', s.users.m1), /not allowed/);
+});
+
+/* ---------- regressions from the code review ---------- */
+test('kill switch: the scheduler does not advance anyone, so steps cannot pile up', async () => {
+  const s = await running();
+  s.Settings.set(s.db, 'kill_switch', true);
+  for (const d of ['02', '05', '07']) await s.day('2026-12-' + d);
+  assert.equal(s.db.prepare("SELECT COUNT(*) n FROM messages WHERE kind='template'").get().n, 0);
+  assert.equal(s.enr('+97339990001').tpl_count, 0);
+  s.Settings.set(s.db, 'kill_switch', false);
+  await s.day('2026-12-08');
+  assert.deepEqual(s.tpls('+97339990001'), ['price'], 'one step, not three at once');
+});
+test('a handover in one campaign stops the customer\'s other campaigns', async () => {
+  const s = await running();
+  const imp2 = Campaigns.createImport(s.ctx, { fileName: 'second.csv', rows: [row('39990001', 'Ali', 'Waiting for stock')], user: s.users.m1 });
+  const c2 = Campaigns.createCampaign(s.ctx, { importId: imp2.importId, name: 'Second', startDate: '2026-12-02', user: s.users.m1 });
+  Campaigns.submit(s.ctx, c2.id, s.users.m1); Campaigns.approve(s.ctx, c2.id, s.users.m2); Campaigns.start(s.ctx, c2.id, s.users.m1);
+  await s.day('2026-12-02');
+  await s.reply('+97339990001', 'Can someone call me?');
+  const states = s.db.prepare("SELECT status FROM enrollments WHERE mobile='+97339990001' ORDER BY id").all().map(r => r.status);
+  assert.deepEqual(states, ['done', 'handover']);
+  for (const d of ['05', '09', '15']) await s.day('2026-12-' + d);
+  assert.equal(s.db.prepare("SELECT COUNT(*) n FROM messages WHERE mobile='+97339990001' AND kind='template' AND created_at > '2026-12-03'").get().n, 0);
+});
+test('a template blocked at send time is not counted as sent; the step is offered again', async () => {
+  const s = await running();
+  s.clock.set('2026-12-02T07:00:00Z');
+  Scheduler.tick(s.ctx);                              // queued while live
+  s.Settings.set(s.db, 'go_live', false);             // back to test mode before it leaves
+  await Sender.processOutbox(s.ctx);
+  const e = s.enr('+97339990001');
+  assert.equal(s.db.prepare("SELECT status FROM messages WHERE mobile='+97339990001'").get().status, 'blocked');
+  assert.deepEqual([e.status, e.tpl_count, e.unanswered, e.next_key], ['queued', 0, 0, 'price']);
+  s.Settings.set(s.db, 'go_live', true);
+  await s.day('2026-12-03');
+  assert.deepEqual(s.tpls('+97339990001'), ['price']);
+});
+test('erasing a customer with a reply still in the webhook queue does not bring it back', async () => {
+  const s = await running();
+  await s.day('2026-12-02');
+  s.ctx.provider.simulateInbound({ from: '+97339990002', text: 'please stop' });
+  await s.ctx.provider.flush();                        // stored, not processed
+  Customers.erase(s.ctx, '+97339990002', s.users.admin);
+  await s.ctx.processWebhooks();
+  assert.equal(s.db.prepare("SELECT COUNT(*) n FROM messages WHERE mobile='+97339990002'").get().n, 0);
+  assert.ok(Opt.isOptedOut(s.db, '+97339990002'), 'the STOP in the queue was still honoured');
 });

@@ -77,6 +77,17 @@ function createApp(ctx) {
     routes.push({ method, rx, keys, fn, ...opts });
   };
   const userFrom = req => Auth.session(ctx.db, cookies(req)[COOKIE], ctx.clock.now());
+  /* Origin (when the browser sends one) must be this site: the Host we were called with, the host a
+     reverse proxy says it forwarded (X-Forwarded-Host), or PUBLIC_URL. "null" and garbage are refused. */
+  const publicHost = ctx.cfg.publicUrl ? (() => { try { return new URL(ctx.cfg.publicUrl).host; } catch { return null; } })() : null;
+  const sameOrigin = req => {
+    const origin = req.headers.origin;
+    if (!origin) return true;
+    let host; try { host = new URL(origin).host; } catch { return false; }
+    if (!host) return false;
+    const fwd = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+    return host === req.headers.host || (fwd && host === fwd) || (publicHost && host === publicHost);
+  };
   const num = v => { const n = Number(v); if (!Number.isInteger(n) || n <= 0) throw httpError(400, 'Bad id'); return n; };
 
   /* ---------- public ---------- */
@@ -260,8 +271,7 @@ function createApp(ctx) {
         if (!sess) return send(res, 401, { error: 'Please sign in' });
         user = sess.user;
         if (req.method !== 'GET') {
-          const origin = req.headers.origin;
-          if (origin && new URL(origin).host !== req.headers.host) return send(res, 403, { error: 'Cross-origin request refused' });
+          if (!sameOrigin(req)) return send(res, 403, { error: 'Cross-origin request refused' });
           if (!Auth.csrfOk(sess, req.headers['x-csrf-token'])) return send(res, 403, { error: 'Missing or wrong CSRF token. Reload the page.' });
         }
         if (route.perm) Auth.must(user, route.perm);
