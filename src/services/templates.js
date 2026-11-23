@@ -13,42 +13,42 @@ async function sync(ctx, user) {
   const list = await ctx.provider.listTemplates();
   const now = ctx.nowIso();
   const seen = new Set();
-  tx(ctx.db, () => {
+  await tx(ctx.db, async () => {
     for (const t of list) {
       const lang = normLang(t.language);
       seen.add(t.name + '|' + lang);
-      ctx.db.prepare(`INSERT INTO templates(name, language, status, category, meta_id, body, reason, synced_at) VALUES (?,?,?,?,?,?,?,?)
+      await ctx.db.prepare(`INSERT INTO templates(name, language, status, category, meta_id, body, reason, synced_at) VALUES (?,?,?,?,?,?,?,?)
         ON CONFLICT(name, language) DO UPDATE SET status=excluded.status, category=excluded.category, meta_id=excluded.meta_id, body=excluded.body, reason=excluded.reason, synced_at=excluded.synced_at`)
         .run(t.name, lang, String(t.status || 'UNKNOWN').toUpperCase(), t.category || null, t.id || null, t.body || null, t.reason || null, now);
     }
-    for (const r of ctx.db.prepare('SELECT name, language FROM templates').all())
-      if (!seen.has(r.name + '|' + r.language)) ctx.db.prepare("UPDATE templates SET status = 'NOT_FOUND', synced_at = ? WHERE name = ? AND language = ?").run(now, r.name, r.language);
+    for (const r of await ctx.db.prepare('SELECT name, language FROM templates').all())
+      if (!seen.has(r.name + '|' + r.language)) await ctx.db.prepare("UPDATE templates SET status = 'NOT_FOUND', synced_at = ? WHERE name = ? AND language = ?").run(now, r.name, r.language);
   });
   const approved = list.filter(t => String(t.status).toUpperCase() === 'APPROVED').length;
-  audit(ctx.db, user || null, 'templates.sync', ctx.provider.name, { total: list.length, approved });
+  await audit(ctx.db, user || null, 'templates.sync', ctx.provider.name, { total: list.length, approved });
   return { total: list.length, approved };
 }
 
 /** {ok, status} for a template name in a language. */
-function approval(db, name, language) {
-  const r = db.prepare('SELECT status FROM templates WHERE name = ? AND language = ?').get(name, normLang(language));
+async function approval(db, name, language) {
+  const r = await db.prepare('SELECT status FROM templates WHERE name = ? AND language = ?').get(name, normLang(language));
   if (!r) return { ok: false, status: 'UNKNOWN' };
   return { ok: r.status === 'APPROVED', status: r.status };
 }
 
-function applyStatusUpdate(ctx, v) {
+async function applyStatusUpdate(ctx, v) {
   const lang = normLang(v.message_template_language);
   const ev = String(v.event || '').toUpperCase();
   const status = ev === 'REINSTATED' || ev === 'UNARCHIVED' ? 'APPROVED' : ev === 'FLAGGED' ? 'APPROVED' : ev;
-  ctx.db.prepare(`INSERT INTO templates(name, language, status, meta_id, reason, synced_at) VALUES (?,?,?,?,?,?)
+  await ctx.db.prepare(`INSERT INTO templates(name, language, status, meta_id, reason, synced_at) VALUES (?,?,?,?,?,?)
     ON CONFLICT(name, language) DO UPDATE SET status=excluded.status, reason=excluded.reason, synced_at=excluded.synced_at`)
     .run(v.message_template_name, lang, status, String(v.message_template_id || ''), v.reason || null, ctx.nowIso());
-  audit(ctx.db, null, 'templates.status_update', v.message_template_name, { language: lang, event: ev, reason: v.reason || null });
+  await audit(ctx.db, null, 'templates.status_update', v.message_template_name, { language: lang, event: ev, reason: v.reason || null });
 }
 
 /** The catalogue next to what Meta says about each template. */
-function list(db, language = 'en') {
-  const rows = db.prepare('SELECT * FROM templates').all();
+async function list(db, language = 'en') {
+  const rows = await db.prepare('SELECT * FROM templates').all();
   const find = (n, l) => rows.find(r => r.name === n && r.language === normLang(l));
   return T.CATALOGUE.map(t => {
     const en = find(t.name, language), ar = find(t.name, 'ar');

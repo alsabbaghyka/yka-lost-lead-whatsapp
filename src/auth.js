@@ -43,26 +43,26 @@ function verifyPassword(pw, stored) {
 function checkPassword(pw) { if (String(pw || '').length < 12) { const e = new Error('Password must be at least 12 characters'); e.status = 400; throw e; } }
 
 const publicUser = u => u && ({ id: u.id, email: u.email, name: u.name, role: u.role, active: u.active });
-function createUser(db, { email, name, role, password }) {
+async function createUser(db, { email, name, role, password }) {
   if (!ROLES.includes(role)) { const e = new Error('Role must be one of ' + ROLES.join(', ')); e.status = 400; throw e; }
   if (!/^[^@\s]+@[^@\s]+$/.test(String(email || ''))) { const e = new Error('A valid email is required'); e.status = 400; throw e; }
   checkPassword(password);
-  const u = db.prepare('INSERT INTO users(email, name, role, pw_hash, created_at) VALUES (?,?,?,?,?) RETURNING *')
+  const u = await db.prepare('INSERT INTO users(email, name, role, pw_hash, created_at) VALUES (?,?,?,?,?) RETURNING *')
     .get(String(email).trim(), String(name || email).trim(), role, hashPassword(password), new Date().toISOString());
   return publicUser(u);
 }
-const getUser = (db, id) => publicUser(db.prepare('SELECT * FROM users WHERE id = ?').get(id));
-const listUsers = db => db.prepare('SELECT * FROM users ORDER BY id').all().map(publicUser);
+const getUser = async (db, id) => publicUser(await db.prepare('SELECT * FROM users WHERE id = ?').get(id));
+const listUsers = async db => (await db.prepare('SELECT * FROM users ORDER BY id').all()).map(publicUser);
 
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
 /* a dummy hash so an unknown email takes as long as a wrong password */
 const DUMMY = hashPassword('dummy-password-for-timing');
 const failures = new Map(); // email -> {n, until}
-function login(db, email, password, { hours = 12, now = Date.now() } = {}) {
+async function login(db, email, password, { hours = 12, now = Date.now() } = {}) {
   const key = String(email || '').toLowerCase();
   const f = failures.get(key);
   if (f && f.until > now) { const e = new Error('Too many failed attempts. Try again in a few minutes.'); e.status = 429; throw e; }
-  const u = db.prepare('SELECT * FROM users WHERE email = ?').get(String(email || ''));
+  const u = await db.prepare('SELECT * FROM users WHERE email = ?').get(String(email || ''));
   const ok = verifyPassword(password, u ? u.pw_hash : DUMMY) && u && u.active;
   if (!ok) {
     const n = (f ? f.n : 0) + 1;
@@ -72,18 +72,18 @@ function login(db, email, password, { hours = 12, now = Date.now() } = {}) {
   failures.delete(key);
   const token = crypto.randomBytes(32).toString('base64url');
   const csrf = crypto.randomBytes(24).toString('base64url');
-  db.prepare('INSERT INTO sessions(id, user_id, csrf, created_at, expires_at) VALUES (?,?,?,?,?)')
+  await db.prepare('INSERT INTO sessions(id, user_id, csrf, created_at, expires_at) VALUES (?,?,?,?,?)')
     .run(sha(token), u.id, csrf, new Date(now).toISOString(), new Date(now + hours * 3600e3).toISOString());
-  db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(new Date(now).toISOString(), u.id);
+  await db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(new Date(now).toISOString(), u.id);
   return { token, csrf, user: publicUser(u) };
 }
-function session(db, token, now = Date.now()) {
+async function session(db, token, now = Date.now()) {
   if (!token) return null;
-  const s = db.prepare('SELECT s.*, u.email, u.name, u.role, u.active FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ?').get(sha(token));
+  const s = await db.prepare('SELECT s.*, u.email, u.name, u.role, u.active FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ?').get(sha(token));
   if (!s || Date.parse(s.expires_at) < now || !s.active) return null;
   return { csrf: s.csrf, user: { id: s.user_id, email: s.email, name: s.name, role: s.role, active: s.active } };
 }
-function logout(db, token) { if (token) db.prepare('DELETE FROM sessions WHERE id = ?').run(sha(token)); }
+async function logout(db, token) { if (token) await db.prepare('DELETE FROM sessions WHERE id = ?').run(sha(token)); }
 const csrfOk = (sess, header) => !!(sess && header && sess.csrf.length === String(header).length && crypto.timingSafeEqual(Buffer.from(sess.csrf), Buffer.from(String(header))));
 
 module.exports = { ROLES, PERMS, can, must, hashPassword, verifyPassword, createUser, getUser, listUsers, login, session, logout, csrfOk, publicUser, checkPassword };

@@ -40,7 +40,13 @@ function loadConfig(env = process.env) {
     workerIntervalMs: Number(e('WORKER_INTERVAL_MS') || 2000),
     schedulerIntervalMs: Number(e('SCHEDULER_INTERVAL_MS') || 60000),
     mockFailEvery: Number(e('MOCK_FAIL_EVERY') || 0),   // mock: every Nth number is "not on WhatsApp"
-    mockApproveDrafts: e('MOCK_APPROVE_DRAFTS') !== '0'
+    mockApproveDrafts: e('MOCK_APPROVE_DRAFTS') !== '0',
+    // hosted database (Vercel): Turso / libSQL. Empty = local SQLite file at DB_PATH.
+    tursoUrl: e('TURSO_DATABASE_URL'),
+    tursoToken: e('TURSO_AUTH_TOKEN'),
+    // where there is no command line (Vercel): the first admin, created only while there are no users
+    bootstrapAdmin: e('BOOTSTRAP_ADMIN_EMAIL') && e('BOOTSTRAP_ADMIN_PASSWORD') ? { email: e('BOOTSTRAP_ADMIN_EMAIL'), name: e('BOOTSTRAP_ADMIN_NAME') || 'Admin', password: e('BOOTSTRAP_ADMIN_PASSWORD') } : null,
+    demo: e('DEMO_BANNER') === '1'
   };
   if (provider === 'cloud') {
     const missing = ['WA_ACCESS_TOKEN', 'WA_PHONE_NUMBER_ID', 'WA_WABA_ID', 'WA_APP_SECRET', 'WA_VERIFY_TOKEN'].filter(k => !e(k));

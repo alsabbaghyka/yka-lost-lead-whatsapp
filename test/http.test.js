@@ -14,8 +14,8 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lle-http-'));
 test.before(async () => {
   sys = await start({ env: { WA_PROVIDER: 'mock', DB_PATH: path.join(dir, 't.db'), PORT: '0', WORKER_INTERVAL_MS: '60000', SCHEDULER_INTERVAL_MS: '600000' } });
   base = `http://127.0.0.1:${sys.server.address().port}`;
-  Auth.createUser(sys.ctx.db, { email: 'admin@t.local', name: 'Admin', role: 'admin', password: 'admin password 123' });
-  Auth.createUser(sys.ctx.db, { email: 'view@t.local', name: 'Viewer', role: 'viewer', password: 'viewer password 123' });
+  (await Auth.createUser(sys.ctx.db, { email: 'admin@t.local', name: 'Admin', role: 'admin', password: 'admin password 123' }));
+  (await Auth.createUser(sys.ctx.db, { email: 'view@t.local', name: 'Viewer', role: 'viewer', password: 'viewer password 123' }));
 });
 test.after(async () => { await sys.stop(); fs.rmSync(dir, { recursive: true, force: true }); });
 

@@ -23,7 +23,7 @@ let sys, base;
 test.before(async () => {
   sys = await start({ env: { WA_PROVIDER: 'mock', DB_PATH: path.join(dir, 'e2e.db'), PORT: '0' }, clock, workers: false });
   base = `http://127.0.0.1:${sys.server.address().port}`;
-  const mk = (email, name, role) => Auth.createUser(sys.ctx.db, { email, name, role, password: 'long enough password' });
+  const mk = async (email, name, role) => (await Auth.createUser(sys.ctx.db, { email, name, role, password: 'long enough password' }));
   mk('admin@e2e', 'IT Admin', 'admin'); mk('amina@e2e', 'Amina', 'marketing'); mk('bilal@e2e', 'Bilal', 'marketing'); mk('kumar@e2e', 'S. Kumar', 'sales');
 });
 test.after(async () => { await sys.stop(); fs.rmSync(dir, { recursive: true, force: true }); });
@@ -52,7 +52,7 @@ async function work() {
     clock.advance(1000);
   }
 }
-const q = (sql, ...a) => sys.ctx.db.prepare(sql).all(...a);
+const q = async (sql, ...a) => (await sys.ctx.db.prepare(sql).all(...a));
 
 test('the whole loop, end to end', async () => {
   let admin = await login('admin@e2e'), amina = await login('amina@e2e'), bilal = await login('bilal@e2e'), kumar = await login('kumar@e2e');
@@ -73,18 +73,18 @@ test('the whole loop, end to end', async () => {
   await assert.rejects(amina('POST', `/api/campaigns/${c.id}/approve`), /someone other than/);
   await bilal('POST', `/api/campaigns/${c.id}/approve`);
   const started = await amina('POST', `/api/campaigns/${c.id}/start`);
-  assert.equal(started.enrolled, 106 + q("SELECT COUNT(*) n FROM import_leads WHERE grp='holdout'")[0].n);
+  assert.equal(started.enrolled, 106 + (await q("SELECT COUNT(*) n FROM import_leads WHERE grp='holdout'"))[0].n);
 
   // 3. Day 0: every send-group customer gets one template; holdout gets nothing
-  Scheduler.tick(sys.ctx); await work();
+  (await Scheduler.tick(sys.ctx)); await work();
   let d = await admin('GET', `/api/campaigns/${c.id}`);
   assert.equal((d.funnel.read || 0) + (d.funnel.delivered || 0), 106, 'all 106 Day-0 templates came back read/delivered by webhook');
-  assert.equal(q("SELECT COUNT(*) n FROM messages m JOIN enrollments e ON e.id = m.enrollment_id WHERE e.grp = 'holdout'")[0].n, 0);
+  assert.equal((await q("SELECT COUNT(*) n FROM messages m JOIN enrollments e ON e.id = m.enrollment_id WHERE e.grp = 'holdout'"))[0].n, 0);
   // the sample's leads are all from before the consent date: permission first
-  assert.equal(q("SELECT COUNT(*) n FROM messages WHERE kind='template' AND tpl_name='lost_lead_permission_v1'")[0].n, 106);
+  assert.equal((await q("SELECT COUNT(*) n FROM messages WHERE kind='template' AND tpl_name='lost_lead_permission_v1'"))[0].n, 106);
   assert.equal(d.statuses.asked, 106);
 
-  const sendList = q("SELECT mobile FROM enrollments WHERE campaign_id = ? AND grp = 'send' ORDER BY id", c.id).map(r => r.mobile);
+  const sendList = (await q("SELECT mobile FROM enrollments WHERE campaign_id = ? AND grp = 'send' ORDER BY id", c.id)).map(r => r.mobile);
   const [stopper, chatter, yes, no] = sendList;
 
   // 4. replies come back through signed webhooks
@@ -115,18 +115,18 @@ test('the whole loop, end to end', async () => {
   assert.equal((await kumar('GET', '/api/inbox')).length, 0);
 
   // 6. Day 2 is Friday: nothing. Saturday: YES gets the bucket message; everyone else stays at 1 template (asked)
-  clock.set('2026-12-04T07:00:00Z'); Scheduler.tick(sys.ctx); await work();
-  assert.equal(q("SELECT COUNT(*) n FROM messages WHERE kind='template' AND created_at >= '2026-12-04'")[0].n, 0, 'no Friday sends');
-  clock.set('2026-12-05T07:00:00Z'); Scheduler.tick(sys.ctx); await work();
-  const yesT = q("SELECT tpl_key FROM messages WHERE mobile = ? AND kind='template' ORDER BY id", yes).map(r => r.tpl_key);
+  clock.set('2026-12-04T07:00:00Z'); (await Scheduler.tick(sys.ctx)); await work();
+  assert.equal((await q("SELECT COUNT(*) n FROM messages WHERE kind='template' AND created_at >= '2026-12-04'"))[0].n, 0, 'no Friday sends');
+  clock.set('2026-12-05T07:00:00Z'); (await Scheduler.tick(sys.ctx)); await work();
+  const yesT = (await q("SELECT tpl_key FROM messages WHERE mobile = ? AND kind='template' ORDER BY id", yes)).map(r => r.tpl_key);
   assert.equal(yesT.length, 2); assert.equal(yesT[0], 'permission');
-  assert.equal(q("SELECT status FROM enrollments WHERE mobile = ?", no)[0].status, 'declined');
-  assert.equal(q("SELECT COUNT(*) n FROM messages WHERE mobile = ? AND dir='out'", stopper)[0].n, 2, 'Day 0 and the unsubscribe confirmation, nothing after');
+  assert.equal((await q("SELECT status FROM enrollments WHERE mobile = ?", no))[0].status, 'declined');
+  assert.equal((await q("SELECT COUNT(*) n FROM messages WHERE mobile = ? AND dir='out'", stopper))[0].n, 2, 'Day 0 and the unsubscribe confirmation, nothing after');
 
   // 7. results: an outcome file (invoices) 3 weeks later. Sessions last 12 hours, so sign in again.
   await assert.rejects(admin('GET', '/api/me'), /401/, 'yesterday\'s session has expired');
   admin = await login('admin@e2e'); amina = await login('amina@e2e'); bilal = await login('bilal@e2e');
-  const holdList = q("SELECT mobile FROM enrollments WHERE campaign_id = ? AND grp = 'holdout' UNION SELECT mobile FROM import_leads WHERE import_id = ? AND grp = 'meta_holdout'", c.id, imp.importId).map(r => r.mobile);
+  const holdList = (await q("SELECT mobile FROM enrollments WHERE campaign_id = ? AND grp = 'holdout' UNION SELECT mobile FROM import_leads WHERE import_id = ? AND grp = 'meta_holdout'", c.id, imp.importId)).map(r => r.mobile);
   const buyers = [...sendList.slice(10, 22), holdList[0]];            // 12 messaged, 1 holdout
   const csv = 'Invoice No,Customer Mobile,Invoice Date\n' + buyers.map((m, i) => `INV${i},${m.slice(4)},2${i % 2}/12/2026`).join('\n') + '\nINV99,39998877,21/12/2026\n';
   const up = await admin('POST', '/api/uploads', null, { body: csv, headers: { 'X-File-Name': 'invoices.csv', 'Content-Type': 'application/octet-stream' } });

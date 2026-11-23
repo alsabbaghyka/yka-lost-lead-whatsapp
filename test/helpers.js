@@ -8,17 +8,17 @@ const { createContext } = require('../src/context');
 const Auth = require('../src/auth');
 const Settings = require('../src/settings');
 
-function makeSystem({ now = '2026-12-02T07:00:00Z', env = {}, provider } = {}) {
+async function makeSystem({ now = '2026-12-02T07:00:00Z', env = {}, provider } = {}) {
   const cfg = loadConfig({ WA_PROVIDER: 'mock', DB_PATH: ':memory:', ...env });
-  const db = openDb(':memory:');
+  const db = (await openDb(':memory:'));
   const clock = fakeClock(now);
   const ctx = createContext({ cfg, db, clock, provider });
   const users = {
-    admin: Auth.createUser(db, { email: 'admin@test.local', name: 'Admin One', role: 'admin', password: 'correct horse battery 1' }),
-    m1: Auth.createUser(db, { email: 'm1@test.local', name: 'Marketing One', role: 'marketing', password: 'correct horse battery 2' }),
-    m2: Auth.createUser(db, { email: 'm2@test.local', name: 'Marketing Two', role: 'marketing', password: 'correct horse battery 3' }),
-    sales: Auth.createUser(db, { email: 'kumar@test.local', name: 'S. Kumar', role: 'sales', password: 'correct horse battery 4' }),
-    viewer: Auth.createUser(db, { email: 'v@test.local', name: 'Viewer', role: 'viewer', password: 'correct horse battery 5' })
+    admin: (await Auth.createUser(db, { email: 'admin@test.local', name: 'Admin One', role: 'admin', password: 'correct horse battery 1' })),
+    m1: (await Auth.createUser(db, { email: 'm1@test.local', name: 'Marketing One', role: 'marketing', password: 'correct horse battery 2' })),
+    m2: (await Auth.createUser(db, { email: 'm2@test.local', name: 'Marketing Two', role: 'marketing', password: 'correct horse battery 3' })),
+    sales: (await Auth.createUser(db, { email: 'kumar@test.local', name: 'S. Kumar', role: 'sales', password: 'correct horse battery 4' })),
+    viewer: (await Auth.createUser(db, { email: 'v@test.local', name: 'Viewer', role: 'viewer', password: 'correct horse battery 5' }))
   };
   /** deliver mock webhooks and process them */
   ctx.pump = async () => { for (let i = 0; i < 5; i++) { if (ctx.provider.flush) await ctx.provider.flush(); await ctx.processWebhooks(); } };

@@ -13,7 +13,7 @@ const { notFound } = require('./errors');
 const DATE_HDR = /date|invoice|service|visit|drive|delivery|created|job/i;
 
 /** Port of loadOutcome: every mobile in the file, with the earliest date on its row. */
-function importOutcomes(ctx, { fileName, rows, user }) {
+async function importOutcomes(ctx, { fileName, rows, user }) {
   must(user, 'results.edit');
   const headers = Object.keys(rows.reduce((a, r) => Object.assign(a, r), {}));
   const dateKeys = headers.filter(h => DATE_HDR.test(String(h)));
@@ -29,24 +29,27 @@ function importOutcomes(ctx, { fileName, rows, user }) {
     });
   });
   const batch = crypto.randomUUID();
-  tx(ctx.db, () => {
-    const ins = ctx.db.prepare('INSERT OR IGNORE INTO outcome_events(mobile, at, source_file, batch_id, added_by, added_at) VALUES (?,?,?,?,?,?)');
-    found.forEach((when, m) => ins.run(m, when ? when.toISOString() : null, String(fileName || 'upload').slice(0, 200), batch, user.id, ctx.nowIso()));
+  await tx(ctx.db, async () => {
+    const rowsOut = [...found].map(([m, when]) => [m, when ? when.toISOString() : null, String(fileName || 'upload').slice(0, 200), batch, user.id, ctx.nowIso()]);
+    for (let i = 0; i < rowsOut.length; i += 100) {
+      const part = rowsOut.slice(i, i + 100);
+      await ctx.db.prepare('INSERT OR IGNORE INTO outcome_events(mobile, at, source_file, batch_id, added_by, added_at) VALUES ' + part.map(() => '(?,?,?,?,?,?)').join(',')).run(...part.flat());
+    }
   });
-  audit(ctx.db, user, 'outcomes.import', fileName, { mobiles: found.size, rows: rows.length });
+  await audit(ctx.db, user, 'outcomes.import', fileName, { mobiles: found.size, rows: rows.length });
   return { batch, mobiles: found.size, rows: rows.length, dateColumns: dateKeys };
 }
 const listOutcomeFiles = db => db.prepare('SELECT source_file, batch_id, MIN(added_at) added_at, COUNT(*) mobiles FROM outcome_events GROUP BY batch_id ORDER BY added_at DESC').all();
-function clearOutcomes(ctx, batchId, user) {
+async function clearOutcomes(ctx, batchId, user) {
   must(user, 'results.edit');
-  const n = ctx.db.prepare('DELETE FROM outcome_events WHERE batch_id = ?').run(batchId).changes;
-  audit(ctx.db, user, 'outcomes.clear', batchId, { removed: n });
+  const n = (await ctx.db.prepare('DELETE FROM outcome_events WHERE batch_id = ?').run(batchId)).changes;
+  await audit(ctx.db, user, 'outcomes.clear', batchId, { removed: n });
   return n;
 }
 
-function outcomeMap(db) {
+async function outcomeMap(db) {
   const m = new Map();
-  for (const r of db.prepare('SELECT mobile, at FROM outcome_events').all()) {
+  for (const r of await db.prepare('SELECT mobile, at FROM outcome_events').all()) {
     const when = r.at ? new Date(r.at) : null, prev = m.get(r.mobile);
     if (prev === undefined || (when && (!prev || when < prev))) m.set(r.mobile, when);
   }
@@ -56,16 +59,16 @@ function outcomeMap(db) {
 const pct = x => (x * 100).toFixed(1) + '%';
 const pp = x => (x >= 0 ? '+' : '−') + Math.abs(x * 100).toFixed(1) + ' pts';
 
-function compute(ctx, campaignId, { windowDays = 60 } = {}) {
-  const c = ctx.db.prepare('SELECT * FROM campaigns WHERE id = ?').get(campaignId);
+async function compute(ctx, campaignId, { windowDays = 60 } = {}) {
+  const c = await ctx.db.prepare('SELECT * FROM campaigns WHERE id = ?').get(campaignId);
   if (!c) throw notFound('No such campaign');
   windowDays = Math.max(1, Math.min(365, Math.floor(+windowDays || 60)));
   const day0 = new Date(c.start_date + 'T00:00:00Z');
   const send = new Map(), hold = new Map();
-  ctx.db.prepare("SELECT mobile FROM enrollments WHERE campaign_id = ? AND grp = 'send'").all(c.id).forEach(r => send.set(r.mobile, { day0 }));
-  ctx.db.prepare("SELECT mobile FROM enrollments WHERE campaign_id = ? AND grp = 'holdout'").all(c.id).forEach(r => hold.set(r.mobile, { day0 }));
-  ctx.db.prepare("SELECT mobile FROM import_leads WHERE import_id = ? AND grp = 'meta_holdout' AND mobile IS NOT NULL").all(c.import_id).forEach(r => hold.set(r.mobile, { day0 }));
-  const outcome = outcomeMap(ctx.db);
+  (await ctx.db.prepare("SELECT mobile FROM enrollments WHERE campaign_id = ? AND grp = 'send'").all(c.id)).forEach(r => send.set(r.mobile, { day0 }));
+  (await ctx.db.prepare("SELECT mobile FROM enrollments WHERE campaign_id = ? AND grp = 'holdout'").all(c.id)).forEach(r => hold.set(r.mobile, { day0 }));
+  (await ctx.db.prepare("SELECT mobile FROM import_leads WHERE import_id = ? AND grp = 'meta_holdout' AND mobile IS NOT NULL").all(c.import_id)).forEach(r => hold.set(r.mobile, { day0 }));
+  const outcome = await outcomeMap(ctx.db);
   const a = S.scoreArm(send, outcome, windowDays), b = S.scoreArm(hold, outcome, windowDays);
   const base = { campaign: { id: c.id, name: c.name, start_date: c.start_date }, windowDays, messaged: a, holdout: b, outcomeMobiles: outcome.size };
   if (!a.n || !b.n || !outcome.size) return { ...base, ready: false, message: 'Add at least one outcome file (invoices, test drives, service jobs) with mobile numbers.' };

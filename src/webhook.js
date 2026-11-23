@@ -7,6 +7,7 @@
 const crypto = require('node:crypto');
 const { audit } = require('./audit');
 const { log } = require('./mask');
+const { tx } = require('./db');
 
 function verifyChallenge(cfg, q) {
   const ok = q['hub.mode'] === 'subscribe' && cfg.verifyToken && typeof q['hub.verify_token'] === 'string' &&
@@ -23,8 +24,8 @@ function verifySignature(secret, raw, header) {
   return crypto.timingSafeEqual(Buffer.from(want, 'hex'), Buffer.from(got.toLowerCase(), 'hex'));
 }
 
-const insert = (db, key, kind, payload, at) =>
-  db.prepare('INSERT OR IGNORE INTO webhook_events(event_key, kind, payload, received_at) VALUES (?,?,?,?)').run(key, kind, JSON.stringify(payload), at).changes;
+const insert = async (db, key, kind, payload, at) =>
+  (await db.prepare('INSERT OR IGNORE INTO webhook_events(event_key, kind, payload, received_at) VALUES (?,?,?,?)').run(key, kind, JSON.stringify(payload), at)).changes;
 
 /** @returns {{status:number, stored:number}} */
 async function receive(ctx, raw, headers = {}) {
@@ -32,20 +33,20 @@ async function receive(ctx, raw, headers = {}) {
   if (!verifySignature(ctx.cfg.appSecret, raw, sig)) return { status: 401, stored: 0 };
   let body;
   try { body = JSON.parse(typeof raw === 'string' ? raw : raw.toString('utf8')); }
-  catch { audit(ctx.db, null, 'webhook.malformed', null, { bytes: raw.length }); return { status: 200, stored: 0 }; }
+  catch { await audit(ctx.db, null, 'webhook.malformed', null, { bytes: raw.length }); return { status: 200, stored: 0 }; }
   const at = ctx.nowIso();
   let stored = 0;
   for (const entry of (body && body.entry) || []) {
     for (const ch of entry.changes || []) {
       const v = ch.value || {};
       if (ch.field === 'messages') {
-        for (const m of v.messages || []) stored += insert(ctx.db, 'msg:' + m.id, 'message', { message: m, contacts: v.contacts || [], metadata: v.metadata || {} }, at);
-        for (const s of v.statuses || []) stored += insert(ctx.db, `st:${s.id}:${s.status}`, 'status', { status: s, metadata: v.metadata || {} }, at);
-        for (const e of v.errors || []) stored += insert(ctx.db, 'err:' + crypto.createHash('sha256').update(JSON.stringify(e) + entry.id).digest('hex').slice(0, 32), 'error', { error: e, metadata: v.metadata || {} }, at);
+        for (const m of v.messages || []) stored += await insert(ctx.db, 'msg:' + m.id, 'message', { message: m, contacts: v.contacts || [], metadata: v.metadata || {} }, at);
+        for (const s of v.statuses || []) stored += await insert(ctx.db, `st:${s.id}:${s.status}`, 'status', { status: s, metadata: v.metadata || {} }, at);
+        for (const e of v.errors || []) stored += await insert(ctx.db, 'err:' + crypto.createHash('sha256').update(JSON.stringify(e) + entry.id).digest('hex').slice(0, 32), 'error', { error: e, metadata: v.metadata || {} }, at);
       } else if (ch.field === 'message_template_status_update') {
-        stored += insert(ctx.db, `tpl:${v.message_template_id}:${v.message_template_language}:${v.event}:${entry.time || ''}`, 'template', v, at);
+        stored += await insert(ctx.db, `tpl:${v.message_template_id}:${v.message_template_language}:${v.event}:${entry.time || ''}`, 'template', v, at);
       } else {
-        stored += insert(ctx.db, 'other:' + crypto.createHash('sha256').update(JSON.stringify(ch)).digest('hex').slice(0, 32), 'unknown', ch, at);
+        stored += await insert(ctx.db, 'other:' + crypto.createHash('sha256').update(JSON.stringify(ch)).digest('hex').slice(0, 32), 'unknown', ch, at);
       }
     }
   }
@@ -53,23 +54,31 @@ async function receive(ctx, raw, headers = {}) {
 }
 
 const MAX_EVENT_ATTEMPTS = 5;
-/** Process stored events in arrival order. Returns how many were handled. */
+/** Process stored events in arrival order. Each event is handled inside its own transaction and
+    re-checked there, so two processes (two Vercel instances) never apply the same event twice. */
 async function processPending(ctx, limit = 200) {
   const conversation = require('./services/conversation');
-  const rows = ctx.db.prepare('SELECT * FROM webhook_events WHERE processed_at IS NULL ORDER BY id LIMIT ?').all(limit);
+  const rows = await ctx.db.prepare('SELECT id, kind, attempts FROM webhook_events WHERE processed_at IS NULL ORDER BY id LIMIT ?').all(limit);
+  let handled = 0;
   for (const r of rows) {
     try {
-      const note = conversation.handleEvent(ctx, r.kind, JSON.parse(r.payload));
-      ctx.db.prepare('UPDATE webhook_events SET processed_at = ?, attempts = attempts + 1, error = ? WHERE id = ?').run(ctx.nowIso(), note || null, r.id);
+      const done = await tx(ctx.db, async () => {
+        const ev = await ctx.db.prepare('SELECT * FROM webhook_events WHERE id = ? AND processed_at IS NULL').get(r.id);
+        if (!ev) return false;                     // another process got there first
+        const note = await conversation.handleEvent(ctx, ev.kind, JSON.parse(ev.payload));
+        await ctx.db.prepare('UPDATE webhook_events SET processed_at = ?, attempts = attempts + 1, error = ? WHERE id = ?').run(ctx.nowIso(), note || null, r.id);
+        return true;
+      });
+      if (done) handled++;
     } catch (e) {
       const attempts = r.attempts + 1;
-      ctx.db.prepare('UPDATE webhook_events SET attempts = ?, error = ?, processed_at = ? WHERE id = ?')
+      await ctx.db.prepare('UPDATE webhook_events SET attempts = ?, error = ?, processed_at = ? WHERE id = ? AND processed_at IS NULL')
         .run(attempts, String(e && e.stack || e).slice(0, 2000), attempts >= MAX_EVENT_ATTEMPTS ? ctx.nowIso() : null, r.id);
       log('webhook event failed', { id: r.id, kind: r.kind, error: String(e && e.message || e) });
-      if (attempts >= MAX_EVENT_ATTEMPTS) audit(ctx.db, null, 'webhook.poison', String(r.id), { kind: r.kind, error: String(e && e.message || e) });
+      if (attempts >= MAX_EVENT_ATTEMPTS) await audit(ctx.db, null, 'webhook.poison', String(r.id), { kind: r.kind, error: String(e && e.message || e) });
     }
   }
-  return rows.length;
+  return handled;
 }
 
 module.exports = { verifyChallenge, verifySignature, receive, processPending };

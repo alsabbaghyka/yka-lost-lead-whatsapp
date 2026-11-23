@@ -161,6 +161,7 @@ paths:
     put: { summary: 'admin; any of go_live, kill_switch, daily_cap, max_per_second, friday_skip, quiet_start, quiet_end, send_time, holdout_pct, holdout_key, consent_from, recent_days, max_attempts, template_language', requestBody: { content: { application/json: { schema: { type: object } } } }, responses: { '200': { description: all values }, '400': { description: invalid value } } }
   /api/settings/test-connection: { post: { summary: admin, responses: { '200': { description: '{ok, detail}' } } } }
   /api/system/kill: { post: { summary: 'engage (admin/marketing) or release (admin) the kill switch', requestBody: { content: { application/json: { schema: { type: object, properties: { on: { type: boolean } } } } } }, responses: { '200': { description: '{killSwitch}' } } } }
+  /api/system/run-due: { post: { summary: 'Run due work now: webhook queue, scheduler, outbox (campaign.control). On a server the workers do this every few seconds; on Vercel it also runs after requests.', responses: { '200': { description: '{webhooks, scheduler, outbox}' } } } }
   /api/system/resume-sending: { post: { summary: clear an account-error halt (admin), responses: { '200': { description: ok } } } }
   /api/dead-letters: { get: { responses: { '200': { description: open dead letters } } } }
   /api/dead-letters/{id}/retry: { post: { parameters: [{ $ref: '#/components/parameters/id' }], responses: { '200': { description: ok } } } }

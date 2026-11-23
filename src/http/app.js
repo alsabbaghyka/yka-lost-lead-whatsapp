@@ -54,19 +54,25 @@ function readBody(req, limit) {
 const cookies = req => Object.fromEntries(String(req.headers.cookie || '').split(';').map(s => s.trim().split('=')).filter(p => p[0]).map(([k, ...v]) => [k, decodeURIComponent(v.join('='))]));
 const csvReply = (res, name, text) => send(res, 200, '﻿' + text, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${name.replace(/[^\w.-]/g, '_')}"` });
 
-/* uploaded files waiting for a decision (column mapping, which list); per user, 30 minutes */
-const uploads = new Map();
-function putUpload(user, data) {
+/* uploaded files waiting for a decision (column mapping, which list): per user, used once, 30 minutes.
+   Stored in the database so the next request may reach any instance. Dates survive as ISO strings. */
+const ISO_TS = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/;
+async function putUpload(ctx, user, data) {
   const id = crypto.randomBytes(12).toString('base64url');
-  const now = Date.now();
-  for (const [k, v] of uploads) if (v.expires < now) uploads.delete(k);
-  uploads.set(id, { ...data, userId: user.id, expires: now + 30 * 60e3 });
+  const now = ctx.clock.now();
+  await ctx.db.prepare('DELETE FROM uploads WHERE expires_at < ?').run(new Date(now).toISOString());
+  await ctx.db.prepare('INSERT INTO uploads(id, user_id, file_name, data, created_at, expires_at) VALUES (?,?,?,?,?,?)')
+    .run(id, user.id, data.fileName, JSON.stringify({ rows: data.rows, names: data.names, headerless: data.headerless }), new Date(now).toISOString(), new Date(now + 30 * 60e3).toISOString());
   return id;
 }
-function takeUpload(user, id) {
-  const u = uploads.get(String(id || ''));
-  if (!u || u.userId !== user.id || u.expires < Date.now()) throw httpError(400, 'That upload has expired. Choose the file again.');
-  return u;
+/** Run fn with the upload; it is deleted only when fn succeeds, so a mapping mistake can be corrected. */
+async function useUpload(ctx, user, id, fn) {
+  const row = await ctx.db.prepare('SELECT * FROM uploads WHERE id = ? AND user_id = ? AND expires_at >= ?').get(String(id || ''), user.id, new Date(ctx.clock.now()).toISOString());
+  if (!row) throw httpError(400, 'That upload has expired or was already used. Choose the file again.');
+  const data = JSON.parse(row.data, (k, v) => (typeof v === 'string' && ISO_TS.test(v) ? new Date(v) : v));
+  const out = await fn({ fileName: row.file_name, ...data });
+  await ctx.db.prepare('DELETE FROM uploads WHERE id = ?').run(row.id);
+  return out;
 }
 
 function createApp(ctx) {
@@ -91,87 +97,85 @@ function createApp(ctx) {
   const num = v => { const n = Number(v); if (!Number.isInteger(n) || n <= 0) throw httpError(400, 'Bad id'); return n; };
 
   /* ---------- public ---------- */
-  r('GET', '/healthz', { auth: false }, () => {
-    ctx.db.prepare('SELECT 1').get();
-    const backlog = ctx.db.prepare('SELECT COUNT(*) n FROM webhook_events WHERE processed_at IS NULL').get().n;
-    return { ok: true, provider: ctx.provider.name, webhookBacklog: backlog, halted: !!Sender.halted(ctx) };
+  r('GET', '/healthz', { auth: false }, async () => {
+    const backlog = (await ctx.db.prepare('SELECT COUNT(*) n FROM webhook_events WHERE processed_at IS NULL').get()).n;
+    return { ok: true, provider: ctx.provider.name, database: ctx.db.kind, webhookBacklog: backlog, halted: !!(await Sender.halted(ctx)) };
   });
-  r('POST', '/api/login', { auth: false, csrf: false }, ({ body, res }) => {
-    const out = Auth.login(ctx.db, body.email, body.password, { hours: ctx.cfg.sessionHours, now: ctx.clock.now() });
-    audit(ctx.db, out.user, 'login', null);
+  r('POST', '/api/login', { auth: false, csrf: false }, async ({ body, res }) => {
+    const out = await Auth.login(ctx.db, body.email, body.password, { hours: ctx.cfg.sessionHours, now: ctx.clock.now() });
+    await audit(ctx.db, out.user, 'login', null);
     res.setHeader('Set-Cookie', `${COOKIE}=${out.token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${ctx.cfg.sessionHours * 3600}${ctx.cfg.cookieSecure ? '; Secure' : ''}`);
     return { user: out.user, csrf: out.csrf };
   });
 
   /* ---------- session ---------- */
-  r('POST', '/api/logout', { perm: 'view' }, ({ req, res, user }) => {
-    Auth.logout(ctx.db, cookies(req)[COOKIE]); audit(ctx.db, user, 'logout', null);
+  r('POST', '/api/logout', { perm: 'view' }, async ({ req, res, user }) => {
+    await Auth.logout(ctx.db, cookies(req)[COOKIE]); await audit(ctx.db, user, 'logout', null);
     res.setHeader('Set-Cookie', `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
     return { ok: true };
   });
-  r('GET', '/api/me', { perm: 'view' }, ({ user, sess }) => {
-    const s = Settings.all(ctx.db);
-    return { user, csrf: sess.csrf, provider: ctx.provider.name, goLive: s.go_live, killSwitch: s.kill_switch, halted: Sender.halted(ctx),
-      perms: Object.keys(Auth.PERMS).filter(p => Auth.can(user, p)) };
+  r('GET', '/api/me', { perm: 'view' }, async ({ user, sess }) => {
+    const s = await Settings.all(ctx.db);
+    return { user, csrf: sess.csrf, provider: ctx.provider.name, goLive: s.go_live, killSwitch: s.kill_switch, halted: await Sender.halted(ctx),
+      perms: Object.keys(Auth.PERMS).filter(p => Auth.can(user, p)), demo: !!ctx.cfg.demo };
   });
-  r('GET', '/api/dashboard', { perm: 'view' }, ({ user }) => {
-    const s = Settings.all(ctx.db), now = ctx.clock.now();
-    const q = (sql, ...a) => ctx.db.prepare(sql).get(...a).n;
-    return {
-      goLive: s.go_live, killSwitch: s.kill_switch, halted: Sender.halted(ctx), provider: ctx.provider.name,
-      sentToday: Sender.templatesSentToday(ctx, now), dailyCap: s.daily_cap,
-      campaigns: Object.fromEntries(ctx.db.prepare('SELECT status, COUNT(*) n FROM campaigns GROUP BY status').all().map(x => [x.status, x.n])),
-      queued: q("SELECT COUNT(*) n FROM messages WHERE status = 'queued'"),
-      inbox: Inbox.list(ctx, user).length,
-      optouts: q('SELECT COUNT(*) n FROM optouts'),
-      deadLetters: q('SELECT COUNT(*) n FROM dead_letters WHERE resolved_at IS NULL'),
-      webhookBacklog: q('SELECT COUNT(*) n FROM webhook_events WHERE processed_at IS NULL'),
-      approvedTemplates: q("SELECT COUNT(*) n FROM templates WHERE status = 'APPROVED'"),
-      lastSync: (ctx.db.prepare('SELECT MAX(synced_at) t FROM templates').get() || {}).t || null,
-      pendingApproval: ctx.db.prepare("SELECT id, name, created_by FROM campaigns WHERE status = 'pending_approval'").all(),
-      recent: ctx.db.prepare("SELECT dir, kind, status, outcome, created_at, mobile FROM messages ORDER BY id DESC LIMIT 12").all()
-    };
+  r('GET', '/api/dashboard', { perm: 'view' }, async ({ user }) => {
+    const s = await Settings.all(ctx.db), now = ctx.clock.now();
+    const q = async sql => (await ctx.db.prepare(sql).get()).n;
+    const [halted, sentToday, campaigns, queued, inbox, optouts, deadLetters, webhookBacklog, approvedTemplates, lastSync, pendingApproval, recent] = await Promise.all([
+      Sender.halted(ctx), Sender.templatesSentToday(ctx, now),
+      ctx.db.prepare('SELECT status, COUNT(*) n FROM campaigns GROUP BY status').all(),
+      q("SELECT COUNT(*) n FROM messages WHERE status = 'queued'"),
+      Inbox.list(ctx, user),
+      q('SELECT COUNT(*) n FROM optouts'),
+      q('SELECT COUNT(*) n FROM dead_letters WHERE resolved_at IS NULL'),
+      q('SELECT COUNT(*) n FROM webhook_events WHERE processed_at IS NULL'),
+      q("SELECT COUNT(*) n FROM templates WHERE status = 'APPROVED'"),
+      ctx.db.prepare('SELECT MAX(synced_at) t FROM templates').get(),
+      ctx.db.prepare("SELECT id, name, created_by FROM campaigns WHERE status = 'pending_approval'").all(),
+      ctx.db.prepare('SELECT dir, kind, status, outcome, created_at, mobile FROM messages ORDER BY id DESC LIMIT 12').all()
+    ]);
+    return { goLive: s.go_live, killSwitch: s.kill_switch, halted, provider: ctx.provider.name, sentToday, dailyCap: s.daily_cap,
+      campaigns: Object.fromEntries(campaigns.map(x => [x.status, x.n])), queued, inbox: inbox.length, optouts, deadLetters, webhookBacklog,
+      approvedTemplates, lastSync: (lastSync || {}).t || null, pendingApproval, recent };
   });
 
   /* ---------- uploads + imports ---------- */
-  r('POST', '/api/uploads', { perm: 'view', raw: LIMIT_FILE }, ({ req, raw, user }) => {
+  r('POST', '/api/uploads', { perm: 'view', raw: LIMIT_FILE }, async ({ req, raw, user }) => {
     const fileName = decodeURIComponent(String(req.headers['x-file-name'] || 'upload'));
     const sheet = readSpreadsheet(raw, fileName);
     if (!sheet.rows.length) throw httpError(400, 'No rows found in that file');
     const map = sheet.headerless ? detectByContent(sheet.rows, sheet.names) : detect(sheet.names);
-    const id = putUpload(user, { fileName, ...sheet });
+    const id = await putUpload(ctx, user, { fileName, ...sheet });
     return { uploadId: id, fileName, rowCount: sheet.rows.length, headers: sheet.names, headerless: sheet.headerless, map, fields: FIELDS.map(f => ({ key: f.key, label: f.label, req: !!f.req })), sample: sheet.rows.slice(0, 5) };
   });
-  r('POST', '/api/imports', { perm: 'import' }, ({ body, user }) => {
-    const u = takeUpload(user, body.uploadId);
-    const out = Campaigns.createImport(ctx, { fileName: u.fileName, rows: u.rows, map: body.map, user, headerless: u.headerless });
-    uploads.delete(body.uploadId);
-    return out;
+  r('POST', '/api/imports', { perm: 'import' }, async ({ body, user }) => {
+    return useUpload(ctx, user, body.uploadId, u => Campaigns.createImport(ctx, { fileName: u.fileName, rows: u.rows, map: body.map, user, headerless: u.headerless }));
   });
   r('POST', '/api/imports/sample', { perm: 'import' }, ({ user }) => Campaigns.createImport(ctx, { fileName: 'Sample data (fictional)', rows: sampleRows(), user }));
   r('GET', '/api/imports', { perm: 'view' }, () => Campaigns.listImports(ctx.db));
   r('GET', '/api/imports/:id', { perm: 'view' }, ({ p }) => Campaigns.preview(ctx, num(p.id)));
-  r('GET', '/api/imports/:id/export/:kind', { perm: 'view', csv: true }, ({ p, res }) => csvReply(res, `${p.kind}-import-${p.id}.csv`, Exports.importCsv(ctx, num(p.id), p.kind)));
+  r('GET', '/api/imports/:id/export/:kind', { perm: 'view', csv: true }, async ({ p, res }) => csvReply(res, `${p.kind}-import-${p.id}.csv`, await Exports.importCsv(ctx, num(p.id), p.kind)));
 
   /* ---------- campaigns ---------- */
   r('GET', '/api/campaigns', { perm: 'view' }, () => Campaigns.list(ctx.db));
   r('POST', '/api/campaigns', { perm: 'campaign.build' }, ({ body, user }) => Campaigns.createCampaign(ctx, { importId: num(body.importId), name: body.name, startDate: body.startDate, user }));
   r('GET', '/api/campaigns/:id', { perm: 'view' }, ({ p }) => Campaigns.get(ctx, num(p.id)));
   for (const action of ['submit', 'approve', 'reject', 'start', 'pause', 'resume', 'complete', 'cancel'])
-    r('POST', `/api/campaigns/:id/${action}`, { perm: 'view' }, ({ p, user, body }) => { const out = Campaigns[action](ctx, num(p.id), user, body.note); return { ok: true, ...(out || {}) }; });
+    r('POST', `/api/campaigns/:id/${action}`, { perm: 'view' }, async ({ p, user, body }) => { const out = await Campaigns[action](ctx, num(p.id), user, body.note); return { ok: true, ...(out || {}) }; });
   r('GET', '/api/campaigns/:id/results', { perm: 'view' }, ({ p, query }) => Results.compute(ctx, num(p.id), { windowDays: query.window }));
-  r('GET', '/api/campaigns/:id/export/crm', { perm: 'view', csv: true }, ({ p, res }) => csvReply(res, `crm-writeback-campaign-${p.id}.csv`, Exports.crmWriteback(ctx, num(p.id))));
+  r('GET', '/api/campaigns/:id/export/crm', { perm: 'view', csv: true }, async ({ p, res }) => csvReply(res, `crm-writeback-campaign-${p.id}.csv`, await Exports.crmWriteback(ctx, num(p.id))));
 
   /* ---------- templates ---------- */
-  r('GET', '/api/templates', { perm: 'view' }, () => ({ templates: Templates.list(ctx.db, Settings.get(ctx.db, 'template_language')), provider: ctx.provider.name }));
-  r('POST', '/api/templates/sync', { perm: 'templates.sync' }, async ({ user }) => Templates.sync(ctx, user));
+  r('GET', '/api/templates', { perm: 'view' }, async () => ({ templates: await Templates.list(ctx.db, await Settings.get(ctx.db, 'template_language')), provider: ctx.provider.name }));
+  r('POST', '/api/templates/sync', { perm: 'templates.sync' }, ({ user }) => Templates.sync(ctx, user));
   r('GET', '/api/templates/export', { perm: 'view', csv: true }, ({ res }) => csvReply(res, 'whatsapp-templates-to-submit.csv', Exports.templatesCsv()));
 
   /* ---------- inbox ---------- */
   r('GET', '/api/inbox', { perm: 'view' }, ({ user }) => Inbox.list(ctx, user));
-  r('POST', '/api/inbox/:id/reply', { perm: 'inbox.reply' }, ({ p, body, user }) => ({ messageId: Inbox.reply(ctx, num(p.id), body.body, user) }));
-  r('POST', '/api/inbox/:id/resolve', { perm: 'inbox.reply' }, ({ p, body, user }) => { Inbox.resolve(ctx, num(p.id), user, body.note); return { ok: true }; });
-  r('POST', '/api/inbox/:id/assign', { perm: 'campaign.control' }, ({ p, body, user }) => { Inbox.assign(ctx, num(p.id), body.userId ? num(body.userId) : null, user); return { ok: true }; });
+  r('POST', '/api/inbox/:id/reply', { perm: 'inbox.reply' }, async ({ p, body, user }) => ({ messageId: await Inbox.reply(ctx, num(p.id), body.body, user) }));
+  r('POST', '/api/inbox/:id/resolve', { perm: 'inbox.reply' }, async ({ p, body, user }) => { await Inbox.resolve(ctx, num(p.id), user, body.note); return { ok: true }; });
+  r('POST', '/api/inbox/:id/assign', { perm: 'campaign.control' }, async ({ p, body, user }) => { await Inbox.assign(ctx, num(p.id), body.userId ? num(body.userId) : null, user); return { ok: true }; });
 
   /* ---------- customers ---------- */
   r('GET', '/api/customers', { perm: 'view' }, ({ query }) => Customers.search(ctx, query.q));
@@ -185,53 +189,55 @@ function createApp(ctx) {
   /* ---------- opt-outs, lists, allow-list ---------- */
   r('GET', '/api/optouts', { perm: 'view' }, () => Opt.listOptouts(ctx.db));
   r('POST', '/api/optouts', { perm: 'optout.add' }, ({ body, user }) => Opt.addOptout(ctx, body.mobile, { source: 'manual', text: body.note, user }));
-  r('POST', '/api/optouts/import', { perm: 'suppression.edit' }, ({ body, user }) => { const u = takeUpload(user, body.uploadId); uploads.delete(body.uploadId); return Opt.importOptoutFile(ctx, { rows: u.rows, headers: u.names, fileName: u.fileName, user }); });
-  r('GET', '/api/optouts/export', { perm: 'view', csv: true }, ({ res }) => csvReply(res, 'opt-out-list.csv', Exports.optoutsCsv(ctx)));
+  r('POST', '/api/optouts/import', { perm: 'suppression.edit' }, async ({ body, user }) => { return useUpload(ctx, user, body.uploadId, u => Opt.importOptoutFile(ctx, { rows: u.rows, headers: u.names, fileName: u.fileName, user })); });
+  r('GET', '/api/optouts/export', { perm: 'view', csv: true }, async ({ res }) => csvReply(res, 'opt-out-list.csv', await Exports.optoutsCsv(ctx)));
   r('GET', '/api/suppressions', { perm: 'view' }, ({ query }) => Opt.listSuppressions(ctx.db, query.list));
   r('POST', '/api/suppressions', { perm: 'suppression.edit' }, ({ body, user }) => Opt.addSuppressions(ctx, body.list, [].concat(body.mobiles || []), user));
-  r('POST', '/api/suppressions/import', { perm: 'suppression.edit' }, ({ body, user }) => { const u = takeUpload(user, body.uploadId); uploads.delete(body.uploadId); return Opt.suppressionsFromRows(ctx, body.list, u.rows, u.fileName, user); });
-  r('DELETE', '/api/suppressions/:list/:mobile', { perm: 'suppression.edit' }, ({ p, user }) => ({ removed: Opt.removeSuppression(ctx, p.list, decodeURIComponent(p.mobile), user) }));
+  r('POST', '/api/suppressions/import', { perm: 'suppression.edit' }, async ({ body, user }) => { return useUpload(ctx, user, body.uploadId, u => Opt.suppressionsFromRows(ctx, body.list, u.rows, u.fileName, user)); });
+  r('DELETE', '/api/suppressions/:list/:mobile', { perm: 'suppression.edit' }, async ({ p, user }) => ({ removed: await Opt.removeSuppression(ctx, p.list, decodeURIComponent(p.mobile), user) }));
   r('GET', '/api/allowlist', { perm: 'view' }, () => Opt.listAllowlist(ctx.db));
-  r('POST', '/api/allowlist', { perm: 'settings.edit' }, ({ body, user }) => ({ mobile: Opt.allowlistAdd(ctx, body.mobile, body.note, user) }));
-  r('DELETE', '/api/allowlist/:mobile', { perm: 'settings.edit' }, ({ p, user }) => { Opt.allowlistRemove(ctx, decodeURIComponent(p.mobile), user); return { ok: true }; });
+  r('POST', '/api/allowlist', { perm: 'settings.edit' }, async ({ body, user }) => ({ mobile: await Opt.allowlistAdd(ctx, body.mobile, body.note, user) }));
+  r('DELETE', '/api/allowlist/:mobile', { perm: 'settings.edit' }, async ({ p, user }) => { await Opt.allowlistRemove(ctx, decodeURIComponent(p.mobile), user); return { ok: true }; });
 
   /* ---------- results ---------- */
-  r('POST', '/api/outcomes/import', { perm: 'results.edit' }, ({ body, user }) => { const u = takeUpload(user, body.uploadId); uploads.delete(body.uploadId); return Results.importOutcomes(ctx, { fileName: u.fileName, rows: u.rows, user }); });
+  r('POST', '/api/outcomes/import', { perm: 'results.edit' }, async ({ body, user }) => { return useUpload(ctx, user, body.uploadId, u => Results.importOutcomes(ctx, { fileName: u.fileName, rows: u.rows, user })); });
   r('GET', '/api/outcomes', { perm: 'view' }, () => Results.listOutcomeFiles(ctx.db));
-  r('DELETE', '/api/outcomes/:batch', { perm: 'results.edit' }, ({ p, user }) => ({ removed: Results.clearOutcomes(ctx, p.batch, user) }));
+  r('DELETE', '/api/outcomes/:batch', { perm: 'results.edit' }, async ({ p, user }) => ({ removed: await Results.clearOutcomes(ctx, p.batch, user) }));
 
   /* ---------- settings + system ---------- */
-  r('GET', '/api/settings', { perm: 'view' }, () => ({ values: Settings.all(ctx.db), describe: Settings.describe(), provider: ctx.provider.name, graphVersion: ctx.cfg.graphVersion,
+  r('GET', '/api/settings', { perm: 'view' }, async () => ({ values: await Settings.all(ctx.db), describe: Settings.describe(), provider: ctx.provider.name, graphVersion: ctx.cfg.graphVersion,
     phoneNumberId: ctx.cfg.phoneNumberId || null, wabaId: ctx.cfg.wabaId || null, webhookPath: '/webhook', publicUrl: ctx.cfg.publicUrl || null }));
-  r('PUT', '/api/settings', { perm: 'settings.edit' }, ({ body, user }) => {
+  r('PUT', '/api/settings', { perm: 'settings.edit' }, async ({ body, user }) => {
     const changed = {};
-    for (const [k, v] of Object.entries(body || {})) { const before = Settings.get(ctx.db, k); const after = Settings.set(ctx.db, k, v, user.id); if (before !== after) changed[k] = { from: before, to: after }; }
-    if (Object.keys(changed).length) audit(ctx.db, user, 'settings.update', null, changed);
+    for (const [k, v] of Object.entries(body || {})) { const before = await Settings.get(ctx.db, k); const after = await Settings.set(ctx.db, k, v, user.id); if (before !== after) changed[k] = { from: before, to: after }; }
+    if (Object.keys(changed).length) await audit(ctx.db, user, 'settings.update', null, changed);
     return Settings.all(ctx.db);
   });
-  r('POST', '/api/system/kill', { perm: 'kill.engage' }, ({ body, user }) => {
+  r('POST', '/api/system/kill', { perm: 'kill.engage' }, async ({ body, user }) => {
     const on = !!body.on;
     if (!on && user.role !== 'admin') throw httpError(403, 'Only an admin can release the kill switch');
-    Settings.set(ctx.db, 'kill_switch', on, user.id);
-    audit(ctx.db, user, on ? 'kill_switch.on' : 'kill_switch.off', null);
+    await Settings.set(ctx.db, 'kill_switch', on, user.id);
+    await audit(ctx.db, user, on ? 'kill_switch.on' : 'kill_switch.off', null);
     return { killSwitch: on };
   });
-  r('POST', '/api/system/resume-sending', { perm: 'deadletter.retry' }, ({ user }) => { Sender.resume(ctx, user); return { ok: true }; });
-  r('POST', '/api/settings/test-connection', { perm: 'settings.edit' }, async ({ user }) => { const out = await ctx.provider.testConnection(); audit(ctx.db, user, 'connection.test', ctx.provider.name, { ok: out.ok, detail: out.detail }); return out; });
+  r('POST', '/api/system/resume-sending', { perm: 'deadletter.retry' }, async ({ user }) => { await Sender.resume(ctx, user); return { ok: true }; });
+  r('POST', '/api/settings/test-connection', { perm: 'settings.edit' }, async ({ user }) => { const out = await ctx.provider.testConnection(); await audit(ctx.db, user, 'connection.test', ctx.provider.name, { ok: out.ok, detail: out.detail }); return out; });
   r('GET', '/api/dead-letters', { perm: 'view' }, () => Sender.listDeadLetters(ctx.db));
-  r('POST', '/api/dead-letters/:id/retry', { perm: 'deadletter.retry' }, ({ p, user }) => { Sender.retryDeadLetter(ctx, num(p.id), user); return { ok: true }; });
-  r('POST', '/api/dead-letters/:id/discard', { perm: 'deadletter.retry' }, ({ p, user }) => { Sender.discardDeadLetter(ctx, num(p.id), user); return { ok: true }; });
+  r('POST', '/api/dead-letters/:id/retry', { perm: 'deadletter.retry' }, async ({ p, user }) => { await Sender.retryDeadLetter(ctx, num(p.id), user); return { ok: true }; });
+  r('POST', '/api/dead-letters/:id/discard', { perm: 'deadletter.retry' }, async ({ p, user }) => { await Sender.discardDeadLetter(ctx, num(p.id), user); return { ok: true }; });
   r('GET', '/api/audit', { perm: 'audit.view' }, ({ query }) => listAudit(ctx.db, { limit: Math.min(1000, Number(query.limit) || 200), before: query.before ? Number(query.before) : undefined }));
+  /* run due work now (scheduler, outbox, webhooks) — what the background workers do on a server */
+  r('POST', '/api/system/run-due', { perm: 'campaign.control' }, () => ctx.runDue ? ctx.runDue({ force: true }) : { ok: true });
 
   /* ---------- users ---------- */
   r('GET', '/api/users', { perm: 'view' }, () => Auth.listUsers(ctx.db));
-  r('POST', '/api/users', { perm: 'users.manage' }, ({ body, user }) => { const u = Auth.createUser(ctx.db, body); audit(ctx.db, user, 'user.create', u.email, { role: u.role }); return u; });
-  r('PATCH', '/api/users/:id', { perm: 'users.manage' }, ({ p, body, user }) => {
+  r('POST', '/api/users', { perm: 'users.manage' }, async ({ body, user }) => { const u = await Auth.createUser(ctx.db, body); await audit(ctx.db, user, 'user.create', u.email, { role: u.role }); return u; });
+  r('PATCH', '/api/users/:id', { perm: 'users.manage' }, async ({ p, body, user }) => {
     const id = num(p.id);
-    if (body.role) { if (!Auth.ROLES.includes(body.role)) throw httpError(400, 'Unknown role'); ctx.db.prepare('UPDATE users SET role = ? WHERE id = ?').run(body.role, id); }
-    if (body.active != null) { if (id === user.id && !body.active) throw httpError(400, 'You cannot deactivate yourself'); ctx.db.prepare('UPDATE users SET active = ? WHERE id = ?').run(body.active ? 1 : 0, id); if (!body.active) ctx.db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id); }
-    if (body.password) { Auth.checkPassword(body.password); ctx.db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(Auth.hashPassword(body.password), id); ctx.db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id); }
-    audit(ctx.db, user, 'user.update', String(id), { role: body.role, active: body.active, passwordChanged: !!body.password });
+    if (body.role) { if (!Auth.ROLES.includes(body.role)) throw httpError(400, 'Unknown role'); await ctx.db.prepare('UPDATE users SET role = ? WHERE id = ?').run(body.role, id); }
+    if (body.active != null) { if (id === user.id && !body.active) throw httpError(400, 'You cannot deactivate yourself'); await ctx.db.prepare('UPDATE users SET active = ? WHERE id = ?').run(body.active ? 1 : 0, id); if (!body.active) await ctx.db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id); }
+    if (body.password) { Auth.checkPassword(body.password); await ctx.db.prepare('UPDATE users SET pw_hash = ? WHERE id = ?').run(Auth.hashPassword(body.password), id); await ctx.db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id); }
+    await audit(ctx.db, user, 'user.update', String(id), { role: body.role, active: body.active, passwordChanged: !!body.password });
     return Auth.getUser(ctx.db, id);
   });
 
@@ -241,7 +247,7 @@ function createApp(ctx) {
     const m = cleanMobile(body.mobile); if (!m) throw httpError(400, 'Not a Bahrain mobile');
     ctx.provider.simulateInbound({ from: m, text: String(body.text || ''), kind: body.kind || 'text' });
     await ctx.provider.flush(); await ctx.processWebhooks();
-    audit(ctx.db, user, 'dev.simulate_reply', m, { chars: String(body.text || '').length }); // the text itself stays on the customer timeline, which erasure clears
+    await audit(ctx.db, user, 'dev.simulate_reply', m, { chars: String(body.text || '').length }); // the text itself stays on the customer timeline, which erasure clears
     return { ok: true };
   });
 
@@ -256,7 +262,7 @@ function createApp(ctx) {
           const raw = await readBody(req, LIMIT_WEBHOOK);
           const out = await W.receive(ctx, raw, { 'x-hub-signature-256': req.headers['x-hub-signature-256'] });
           send(res, out.status, out.status === 200 ? 'EVENT_RECEIVED' : 'Invalid signature');
-          if (out.stored) setImmediate(() => ctx.processWebhooks().catch(e => log('webhook processing', String(e))));
+          if (out.stored) ctx.background(() => ctx.processWebhooks());
           return;
         }
         return send(res, 405, 'Method not allowed');
@@ -267,7 +273,7 @@ function createApp(ctx) {
       const p = Object.fromEntries(route.keys.map((k, i) => [k, url.pathname.match(route.rx)[i + 1]]));
       let sess = null, user = null;
       if (route.auth !== false) {
-        sess = userFrom(req);
+        sess = await userFrom(req);
         if (!sess) return send(res, 401, { error: 'Please sign in' });
         user = sess.user;
         if (req.method !== 'GET') {

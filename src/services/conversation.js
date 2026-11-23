@@ -28,8 +28,8 @@ function inboundText(m) {
 
 const stateOf = e => ({ status: e.status, group: e.grp, track: e.track, bucket: e.bucket, next: e.next_key ? { day: e.next_day, key: e.next_key } : null,
   tplCount: e.tpl_count, unanswered: e.unanswered, lastTpl: e.last_tpl, brief: e.brief });
-function saveState(ctx, id, s) {
-  ctx.db.prepare('UPDATE enrollments SET status = ?, next_key = ?, next_day = ?, tpl_count = ?, unanswered = ?, last_tpl = ?, brief = ?, updated_at = ? WHERE id = ?')
+async function saveState(ctx, id, s) {
+  await ctx.db.prepare('UPDATE enrollments SET status = ?, next_key = ?, next_day = ?, tpl_count = ?, unanswered = ?, last_tpl = ?, brief = ?, updated_at = ? WHERE id = ?')
     .run(s.status, s.next ? s.next.key : null, s.next ? s.next.day : null, s.tplCount, s.unanswered, s.lastTpl || null, s.brief || null, ctx.nowIso(), id);
 }
 const dateLabelFor = start => d => C.shortDate(C.addDaysIso(start, d));
@@ -38,86 +38,87 @@ const dateLabelFor = start => d => C.shortDate(C.addDaysIso(start, d));
 const fillReply = (body, cust, e) => body.replace(/\{name\}/g, firstName(cust && cust.name)).replace(/\{brand\}/g, (cust && cust.brand) || 'Y.K. Almoayyed')
   .replace(/\{sales\}/g, (e && e.sales) || (cust && cust.sales) || 'our sales team');
 
-function salesUserFor(ctx, name) {
+async function salesUserFor(ctx, name) {
   if (!name) return null;
-  const u = ctx.db.prepare("SELECT id FROM users WHERE active = 1 AND role IN ('sales','marketing','admin') AND lower(trim(name)) = lower(trim(?))").get(name);
+  const u = await ctx.db.prepare("SELECT id FROM users WHERE active = 1 AND role IN ('sales','marketing','admin') AND lower(trim(name)) = lower(trim(?))").get(name);
   return u ? u.id : null;
 }
 
-function onMessage(ctx, { message: m, contacts = [], metadata = {} }) {
+async function onMessage(ctx, { message: m, contacts = [], metadata = {} }) {
   if (ctx.cfg.phoneNumberId && metadata.phone_number_id && String(metadata.phone_number_id) !== String(ctx.cfg.phoneNumberId))
     return `ignored: phone number id ${metadata.phone_number_id} is not this system's`;
   const contact = contacts[0] || {};
   const userId = m.from_user_id || contact.user_id || null;
   let mobile = cleanMobile(m.from || contact.wa_id);
-  let cust = mobile ? ctx.db.prepare('SELECT * FROM customers WHERE mobile = ?').get(mobile) : null;
-  if (!cust && !mobile && userId) { cust = ctx.db.prepare('SELECT * FROM customers WHERE wa_user_id = ?').get(userId); if (cust) mobile = cust.mobile; }
+  let cust = mobile ? await ctx.db.prepare('SELECT * FROM customers WHERE mobile = ?').get(mobile) : null;
+  if (!cust && !mobile && userId) { cust = await ctx.db.prepare('SELECT * FROM customers WHERE wa_user_id = ?').get(userId); if (cust) mobile = cust.mobile; }
   if (!mobile) return 'no Bahrain mobile and unknown WhatsApp user id: kept in the event log only';
   const { kind, text } = inboundText(m);
   const at = m.timestamp ? new Date(Number(m.timestamp) * 1000).toISOString() : ctx.nowIso();
-  return tx(ctx.db, () => {
-    const ins = ctx.db.prepare(`INSERT OR IGNORE INTO messages(customer_id, mobile, dir, kind, body, wamid, status, automated, created_at, updated_at)
+  return await tx(ctx.db, async () => {
+    const ins = await ctx.db.prepare(`INSERT OR IGNORE INTO messages(customer_id, mobile, dir, kind, body, wamid, status, automated, created_at, updated_at)
       VALUES (?,?,'in',?,?,?,'received',0,?,?)`).run(cust ? cust.id : null, mobile, kind, text, m.id, at, ctx.nowIso());
     if (!ins.changes) return 'duplicate message id';
-    if (cust) ctx.db.prepare('UPDATE customers SET last_inbound_at = MAX(COALESCE(last_inbound_at, \'\'), ?), wa_user_id = COALESCE(?, wa_user_id) WHERE id = ?').run(at, userId, cust.id);
-    const e = cust ? ctx.db.prepare('SELECT * FROM enrollments WHERE customer_id = ? ORDER BY id DESC LIMIT 1').get(cust.id) : null;
+    if (cust) await ctx.db.prepare('UPDATE customers SET last_inbound_at = MAX(COALESCE(last_inbound_at, \'\'), ?), wa_user_id = COALESCE(?, wa_user_id) WHERE id = ?').run(at, userId, cust.id);
+    const e = cust ? await ctx.db.prepare('SELECT * FROM enrollments WHERE customer_id = ? ORDER BY id DESC LIMIT 1').get(cust.id) : null;
     if (!e) {
       if (isStop(text)) {
-        const r = Opt.addOptout(ctx, mobile, { source: 'whatsapp_reply', text });
-        if (cust && r.added) Sender.enqueueText(ctx, { mobile, body: 'You are unsubscribed. We will not message you again.', key: 'optout_confirm', automated: true });
+        const r = await Opt.addOptout(ctx, mobile, { source: 'whatsapp_reply', text });
+        if (cust && r.added) await Sender.enqueueText(ctx, { mobile, body: 'You are unsubscribed. We will not message you again.', key: 'optout_confirm', automated: true });
         return 'opt-out from someone not in a campaign';
       }
       return cust ? 'customer not in a campaign: kept on the timeline' : 'unknown sender: kept on the timeline';
     }
-    const camp = ctx.db.prepare('SELECT * FROM campaigns WHERE id = ?').get(e.campaign_id);
+    const camp = await ctx.db.prepare('SELECT * FROM campaigns WHERE id = ?').get(e.campaign_id);
     const day = Math.max(0, C.dayIndex(camp.start_date, ctx.clock.now()));
     const r = Q.onReply(stateOf(e), text, day, { dateLabel: dateLabelFor(camp.start_date) });
-    saveState(ctx, e.id, r.state);
+    await saveState(ctx, e.id, r.state);
     // a person now has the customer (or they said no): their other campaigns stop too
     if (['handover', 'declined'].includes(r.state.status) && r.state.status !== e.status) {
-      ctx.db.prepare("UPDATE enrollments SET status = ?, next_key = NULL, next_day = NULL, brief = ?, updated_at = ? WHERE customer_id = ? AND id <> ? AND status IN ('queued','active','asked')")
+      await ctx.db.prepare("UPDATE enrollments SET status = ?, next_key = NULL, next_day = NULL, brief = ?, updated_at = ? WHERE customer_id = ? AND id <> ? AND status IN ('queued','active','asked')")
         .run(r.state.status === 'declined' ? 'declined' : 'done', r.state.status === 'declined' ? 'Declined updates in another campaign' : `Stopped: with the salesperson from campaign ${camp.name}`, ctx.nowIso(), cust.id, e.id);
     }
     for (const a of r.actions) {
-      if (a.type === 'optout') Opt.addOptout(ctx, mobile, { source: 'whatsapp_reply', text });
+      if (a.type === 'optout') await Opt.addOptout(ctx, mobile, { source: 'whatsapp_reply', text });
       else if (a.type === 'handover') {
-        ctx.db.prepare('UPDATE enrollments SET handover_at = ?, handover_user = COALESCE(handover_user, ?), resolved_at = NULL, resolved_by = NULL WHERE id = ?')
-          .run(ctx.nowIso(), salesUserFor(ctx, e.sales), e.id);
-        audit(ctx.db, null, 'handover', mobile, { enrollment: e.id, why: a.why, salesperson: e.sales });
+        await ctx.db.prepare('UPDATE enrollments SET handover_at = ?, handover_user = COALESCE(handover_user, ?), resolved_at = NULL, resolved_by = NULL WHERE id = ?')
+          .run(ctx.nowIso(), await salesUserFor(ctx, e.sales), e.id);
+        await audit(ctx.db, null, 'handover', mobile, { enrollment: e.id, why: a.why, salesperson: e.sales });
       } else if (a.type === 'text') {
         const optConfirm = r.actions.some(x => x.type === 'optout');
-        Sender.enqueueText(ctx, { mobile, enrollmentId: e.id, body: fillReply(a.body, cust, e), automated: true, key: optConfirm ? 'optout_confirm' : 'auto_reply' });
+        await Sender.enqueueText(ctx, { mobile, enrollmentId: e.id, body: fillReply(a.body, cust, e), automated: true, key: optConfirm ? 'optout_confirm' : 'auto_reply' });
       }
     }
     if (r.actions.some(x => x.type === 'optout') && !r.actions.some(x => x.type === 'text'))
-      Sender.enqueueText(ctx, { mobile, enrollmentId: e.id, body: 'You are unsubscribed. We will not message you again.', key: 'optout_confirm', automated: true });
+      await Sender.enqueueText(ctx, { mobile, enrollmentId: e.id, body: 'You are unsubscribed. We will not message you again.', key: 'optout_confirm', automated: true });
     return null;
   });
 }
 
-function onStatus(ctx, { status: s, metadata = {} }) {
+async function onStatus(ctx, { status: s, metadata = {} }) {
   if (ctx.cfg.phoneNumberId && metadata.phone_number_id && String(metadata.phone_number_id) !== String(ctx.cfg.phoneNumberId))
     return `ignored: phone number id ${metadata.phone_number_id} is not this system's`;
-  const m = ctx.db.prepare('SELECT * FROM messages WHERE wamid = ?').get(s.id);
-  if (!m) return 'status for a message this system did not send';
+  const m = await ctx.db.prepare('SELECT * FROM messages WHERE wamid = ?').get(s.id);
+  // a status can arrive before the sender has stored Meta's message id: fail, so it is retried later
+  if (!m) throw new Error('status for a message id this system does not know (yet)');
   if (s.status === 'failed') {
     const e0 = (s.errors || [])[0] || {};
     const err = classifyError({ code: e0.code, title: e0.title || e0.message, details: e0.error_data && e0.error_data.details });
-    ctx.db.prepare("UPDATE messages SET status = 'failed', error_code = ?, error_title = ?, outcome = ?, updated_at = ? WHERE id = ?")
+    await ctx.db.prepare("UPDATE messages SET status = 'failed', error_code = ?, error_title = ?, outcome = ?, updated_at = ? WHERE id = ?")
       .run(err.code, err.title, err.label, ctx.nowIso(), m.id);
-    Sender.applyFailureEffects(ctx, m, err);
+    await Sender.applyFailureEffects(ctx, m, err);
     return null;
   }
   if (m.status !== 'failed' && (RANK[s.status] || 0) > (RANK[m.status] || 0))
-    ctx.db.prepare('UPDATE messages SET status = ?, updated_at = ? WHERE id = ?').run(s.status, ctx.nowIso(), m.id);
+    await ctx.db.prepare('UPDATE messages SET status = ?, updated_at = ? WHERE id = ?').run(s.status, ctx.nowIso(), m.id);
   return null;
 }
 
-function handleEvent(ctx, kind, payload) {
+async function handleEvent(ctx, kind, payload) {
   if (kind === 'message') return onMessage(ctx, payload);
   if (kind === 'status') return onStatus(ctx, payload);
-  if (kind === 'template') { Templates.applyStatusUpdate(ctx, payload); return null; }
-  if (kind === 'error') { audit(ctx.db, null, 'meta.error', String(payload.error && payload.error.code || ''), payload.error); return null; }
+  if (kind === 'template') { await Templates.applyStatusUpdate(ctx, payload); return null; }
+  if (kind === 'error') { await audit(ctx.db, null, 'meta.error', String(payload.error && payload.error.code || ''), payload.error); return null; }
   return 'unhandled webhook field';
 }
 

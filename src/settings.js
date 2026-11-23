@@ -24,20 +24,24 @@ const DEFS = {
   template_language: { def: 'en', parse: v => { if (!/^[a-z]{2}(_[A-Z]{2})?$/.test(String(v))) throw new Error('Language code like en or en_US'); return String(v); }, label: 'Template language code as submitted to Meta' }
 };
 
-function get(db, key) {
+async function get(db, key) {
   const d = DEFS[key]; if (!d) throw new Error('Unknown setting ' + key);
-  const r = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  const r = await db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
   return r ? d.parse(JSON.parse(r.value)) : d.def;
 }
-function set(db, key, value, userId) {
+async function set(db, key, value, userId) {
   const d = DEFS[key]; if (!d) throw Object.assign(new Error('Unknown setting ' + key), { status: 400 });
   let v;
   try { v = d.parse(value); } catch (e) { e.status = 400; e.message = `${key}: ${e.message}`; throw e; }
-  db.prepare('INSERT INTO settings(key, value, updated_at, updated_by) VALUES (?,?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at, updated_by=excluded.updated_by')
+  await db.prepare('INSERT INTO settings(key, value, updated_at, updated_by) VALUES (?,?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at, updated_by=excluded.updated_by')
     .run(key, JSON.stringify(v), new Date().toISOString(), userId || null);
   return v;
 }
-const all = db => Object.fromEntries(Object.keys(DEFS).map(k => [k, get(db, k)]));
+/** every setting in one query */
+async function all(db) {
+  const stored = new Map((await db.prepare('SELECT key, value FROM settings').all()).map(r => [r.key, r.value]));
+  return Object.fromEntries(Object.entries(DEFS).map(([k, d]) => [k, stored.has(k) ? d.parse(JSON.parse(stored.get(k))) : d.def]));
+}
 const describe = () => Object.fromEntries(Object.entries(DEFS).map(([k, d]) => [k, { label: d.label, default: d.def }]));
 
 module.exports = { get, set, all, describe, DEFS };
