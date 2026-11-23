@@ -11,7 +11,7 @@ const BUCKETS = [
   { id: 'thinking', name: 'Still thinking', desc: 'Postponed, decide later, next year', ch: 'wa', tplName: 'lost_lead_thinking_v1',
     kw: ['thinking', 'think', 'later', 'future', 'postpon*', 'postph*', 'next year', 'not now', 'decide', 'decided', 'undecided', 'not planning', 'need time', 'needs time', 'some time', 'finalis*', 'finaliz*', 'deferred', 'on hold', 'hold purchase', 'no plan', 'not required now', 'no need now', 'will call', 'come back', 'come ba*', 'call back', 'not needed', 'if anything'] },
   { id: 'competitor', name: 'Bought elsewhere', desc: 'Another brand, competitor, used car', ch: 'wa', tplName: 'lost_lead_aftersales_v1',
-    kw: ['another brand', 'other brand', 'competitor', 'bought', 'purchased', 'used car', 'pre-owned', 'preowned', 'second hand', 'second-hand', 'reserve another', 'other dealer', 'offred', 'offered', 'toyota', 'hyundai', 'kia', 'mg', 'chery', 'geely', 'haval', 'jetour', 'changan', 'jac', 'bestu*', 'byd', 'tank', 'biugh*', 'biught', 'alameed', 'deal done via', 'sold by', 'already to someone', 'alreadyto someone'] },
+    kw: ['another brand', 'other brand', 'competitor', 'bought', 'purchased', 'used car', 'pre-owned', 'preowned', 'second hand', 'second-hand', 'reserve another', 'other dealer', 'offred', 'offered', 'toyota', 'hyundai', 'kia', 'mg', 'chery', 'geely', 'haval', 'jetour', 'changan', 'tiggo', 'cheery', 'jac', 'bestu*', 'byd', 'tank', 'biugh*', 'biught', 'alameed', 'deal done via', 'sold by', 'already to someone', 'alreadyto someone'] },
   { id: 'features', name: "Product didn't fit", desc: 'Size, features, fuel, warranty, resale', ch: 'wa', tplName: 'lost_lead_alternative_v1',
     kw: ['feature', 'spec*', 'size', 'space', 'seat', 'small', 'big', 'fuel', 'engine', 'power', 'performance', 'did not like', "didn't like", 'warranty', 'resale', 'model not', 'design', 'interior', 'electric', 'hybrid', 'vibration', 'noise', 'not happy with', 'full option'] },
   { id: 'family', name: 'Family said no', desc: 'Spouse, parents or family decision', ch: 'wa', tplName: 'lost_lead_family_v1',
@@ -36,7 +36,8 @@ const SYSTEM_TEXT = [/marked as lost sal?e?/i, /most sale/i, /^_?x000d_?/i, /enq
 /* Y.K. Almoayyed SLR franchise codes */
 const BRAND_CODES = { K38: 'JMC', K48: 'SOUEAST', K58: 'ZEEKR', K69: '212', K88: 'Kaiyi' };
 
-function cleanBrand(v) { const s = cleanText(v); return BRAND_CODES[s.toUpperCase()] || s; }
+/* a code we cannot name (N58, A49…) is dropped, so a customer never reads it in a message */
+function cleanBrand(v) { const s = cleanText(v); if (BRAND_CODES[s.toUpperCase()]) return BRAND_CODES[s.toUpperCase()]; return /^[A-Z]\d{2,3}$/i.test(s) ? '' : s; }
 function cleanModel(v) { return cleanText(v).replace(/^[A-Z]\//i, '').trim(); }
 function meaningful(text) { const t = cleanText(text); if (!t) return ''; return SYSTEM_TEXT.some(rx => rx.test(t)) ? '' : t; }
 const bucketById = id => BUCKETS.find(b => b.id === id);
@@ -50,7 +51,7 @@ function classify(r) {
   if (has(text, TRANSFER_KW)) return { ex: 'transfer' };
   if (has(text, JUNK_KW)) return { ex: 'junk' };
   if (has(commentM, OPEN_TEXT_KW)) return { ex: 'open' };
-  if (st && has(st, OPEN_KW) && !st.includes('lost') && !st.includes('closed') && !st.includes('disqual')) return { ex: 'open' };
+  if (st && has(st, OPEN_KW) && !st.includes('lost') && !st.includes('closed') && !st.includes('disqual') && !st.includes('lapsed')) return { ex: 'open' };
   if (rs && has(rs, ['follow up', 'follow-up']) && !rs.includes('lost')) return { ex: 'open' };
   /* Disqualified is a judgement about the lead, so read it from the status or
      the loss reason only: "not interested in the white colour" is a remark about the car. */

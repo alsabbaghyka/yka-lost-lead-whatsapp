@@ -8,15 +8,16 @@ const T = require('./templates');
 
 const FIELDS = [
   { key: 'mobile', label: 'Mobile', req: true, kw: ['mobile', 'phone', 'whatsapp', 'contact no', 'contact number', 'tel', 'gsm', 'cell'] },
-  { key: 'name', label: 'Customer', kw: ['customer name', 'name', 'customer', 'client', 'first name'] },
-  { key: 'brand', label: 'Brand', kw: ['brand', 'make', 'franchise', 'division', 'showroom', 'company'] },
+  { key: 'name', label: 'Customer', kw: ['customer name', 'custname', 'cust name', 'name', 'customer', 'client', 'first name'], not: ['user', 'company', 'sales', 'exec'] },
+  { key: 'brand', label: 'Brand', kw: ['brand', 'make', 'franchise', 'division', 'showroom'] },
   { key: 'model', label: 'Model', kw: ['model', 'vehicle', 'car', 'variant', 'interest'] },
   { key: 'reason', label: 'Loss reason', req: true, kw: ['lost reason', 'loss reason', 'reason', 'lost type', 'lost category', 'outcome'] },
   { key: 'comments', label: 'Comments', kw: ['comment', 'remark', 'note', 'feedback', 'description'] },
-  { key: 'status', label: 'Status', kw: ['status', 'stage', 'lead status', 'result'] },
-  { key: 'date', label: 'Lead date', kw: ['created', 'enquiry date', 'inquiry date', 'lead date', 'date'] },
-  { key: 'sales', label: 'Salesperson', kw: ['sales', 'consultant', 'executive', 'owner', 'advisor', 'assigned'] }
+  { key: 'status', label: 'Status', kw: ['status', 'stage', 'lead status', 'result', 'desc'] },
+  { key: 'date', label: 'Lead date', kw: ['credate', 'created', 'enquiry date', 'inquiry date', 'lead date', 'date'] },
+  { key: 'sales', label: 'Salesperson', kw: ['sales', 'consultant', 'executive', 'owner', 'advisor', 'assigned', 'user name'] }
 ];
+const JOIN = ' + ';
 const EX_LABEL = { invalid: 'Invalid or non-Bahrain mobile', dup: 'Duplicate of another row', transfer: 'Quotation transferred (actually bought)', junk: 'Wrong number or junk lead', open: 'Open deal in CRM', optout: 'Opted out (replied STOP)', list: 'On do-not-contact list',
   declined: 'Opted out or said no before (history)', recent: 'Contacted recently (history)' };
 
@@ -26,10 +27,18 @@ function detect(headers) {
     let best = null, score = 0;
     headers.forEach(h => {
       if (used.has(h)) return; const n = norm(h);
+      if (f.not && f.not.some(x => n.includes(x))) return;
       f.kw.forEach((k, i) => { const s = n === k ? 100 - i : n.includes(k) ? 50 - i : 0; if (s > score) { score = s; best = h; } });
     });
     if (best) { map[f.key] = best; used.add(best); }
   });
+  /* CRM exports that keep the reason as a free-text note split over Notes1, Notes2, Notes3
+     (too long for one field): the reason is all of them, joined. */
+  const notes = headers.filter(h => /^notes?\s*\d*$/i.test(String(h).trim()));
+  if (!map.reason && notes.length) {
+    map.reason = notes.join(JOIN);
+    if (map.comments && (notes.includes(map.comments) || /description/i.test(map.comments))) delete map.comments;
+  }
   return map;
 }
 /** Column guessing from contents, for files with no header row. */
@@ -63,11 +72,16 @@ function runEngine(rows, map, opts = {}) {
   const recentDays = Math.max(0, Math.min(365, Math.floor(+opts.recentDays || 0)));
   const cutoff = recentDays ? (opts.now || Date.now()) - recentDays * 864e5 : null;
   const optouts = opts.optouts || new Set(), exclude = opts.exclude || new Set(), history = opts.history || new Map();
-  const get = (row, k) => map[k] ? row[map[k]] : '';
+  /* a mapping may join several columns: 'Notes1 + Notes2 + Notes3' */
+  const get = (row, k) => {
+    const h = map[k]; if (!h) return '';
+    if (h in row || !h.includes(JOIN)) return row[h];
+    return h.split(JOIN).map(x => row[x]).filter(v => v !== '' && v != null).map(v => cleanText(v)).join(' ');
+  };
 
   const leads = rows.map((row, i) => ({
     i, mobileRaw: get(row, 'mobile'), mobile: cleanMobile(get(row, 'mobile')), name: cleanText(get(row, 'name')),
-    brand: cleanBrand(get(row, 'brand')), model: cleanModel(get(row, 'model')),
+    brand: cleanBrand(get(row, 'brand')) || cleanText(opts.defaultBrand), model: cleanModel(get(row, 'model')),
     reason: cleanText(get(row, 'reason')), comments: cleanText(get(row, 'comments')),
     status: cleanText(get(row, 'status')), date: parseDate(get(row, 'date')), sales: cleanText(get(row, 'sales'))
   }));
@@ -138,4 +152,4 @@ function sampleRows() {
   return rows;
 }
 
-module.exports = { FIELDS, EX_LABEL, detect, detectByContent, runEngine, sampleRows };
+module.exports = { FIELDS, EX_LABEL, JOIN, detect, detectByContent, runEngine, sampleRows };

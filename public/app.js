@@ -121,7 +121,7 @@ screens.import = async () => {
   const imps = await api('GET', '/api/imports');
   const map = UPLOAD ? `<section class="panel"><h3>2 · Check the columns</h3>
     <p class="hint">${esc(UPLOAD.fileName)} · ${fmt(UPLOAD.rowCount)} rows${UPLOAD.headerless ? ' · no header row found, so columns were matched from their contents' : ''}. Mobile and loss reason are required.</p>
-    <form data-form="runImport" class="grid3">${UPLOAD.fields.map(f => `<label class="f">${esc(f.label)}${f.req ? ' *' : ''}<select name="${esc(f.key)}"><option value="">— not in file —</option>${UPLOAD.headers.map(h => `<option ${UPLOAD.map[f.key] === h ? 'selected' : ''}>${esc(h)}</option>`).join('')}</select></label>`).join('')}
+    <form data-form="runImport" class="grid3">${UPLOAD.fields.map(f => `<label class="f">${esc(f.label)}${f.req ? ' *' : ''}<select name="${esc(f.key)}"><option value="">— not in file —</option>${(UPLOAD.map[f.key] && !UPLOAD.headers.includes(UPLOAD.map[f.key]) ? [UPLOAD.map[f.key]] : []).concat(UPLOAD.headers).map(h => `<option ${UPLOAD.map[f.key] === h ? 'selected' : ''}>${esc(h)}</option>`).join('')}</select></label>`).join('')}
     <div class="row"><button class="primary" type="submit">Run the engine</button><button type="button" data-act="clearUpload">Choose another file</button></div></form>
     ${table(UPLOAD.headers.slice(0, 9).map(h => ({ h, v: r => typeof r[h] === 'string' && /^\d{4}-\d\d-\d\dT/.test(r[h]) ? r[h].slice(0, 10) : r[h] })), UPLOAD.sample, '')}</section>` : '';
   return `<section class="panel"><h3>1 · Load the CRM lost-sales export</h3>
@@ -313,7 +313,7 @@ screens.settings = async () => {
     <p class="hint">Credentials are set by IT in the server environment (docs/INTEGRATION.md), never on this screen.</p></section>
   <form class="panel" data-form="settings"><h3>Sending rules</h3>
     <div class="grid2">${field('daily_cap', 'number')}${field('max_per_second', 'number')}${field('send_time', 'time')}${field('quiet_start', 'time')}${field('quiet_end', 'time')}${field('max_attempts', 'number')}
-    ${field('holdout_pct', 'number')}${field('holdout_key', 'number')}${field('consent_from', 'date')}${field('recent_days', 'number')}${field('template_language', 'text')}</div>
+    ${field('holdout_pct', 'number')}${field('holdout_key', 'number')}${field('consent_from', 'date')}${field('recent_days', 'number')}${field('template_language', 'text')}${field('default_brand', 'text')}</div>
     ${box('friday_skip')}
     <p class="hint">Changing the holdout % or key mid-pilot moves customers between groups and spoils the comparison.</p>
     ${admin ? '<div class="row"><button class="primary" type="submit">Save</button></div>' : ''}</form></div>

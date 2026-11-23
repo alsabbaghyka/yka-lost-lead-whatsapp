@@ -108,3 +108,20 @@ test('Origin: "null" and other sites are refused; the reverse proxy\'s forwarded
   assert.equal((await api(s, 'POST', '/api/system/kill', { on: false }, { Origin: 'https://lostlead.example', 'X-Forwarded-Host': 'evil.example' })).status, 403);
   assert.equal((await api(s, 'POST', '/api/system/kill', { on: false }, { Origin: 'https://lostlead.example', 'X-Forwarded-Host': 'lostlead.example' })).status, 200);
 });
+
+test('upload the CRM lost-lead export layout: Notes1..3 joined as the reason, then import', async () => {
+  const XLSX = require('../vendor/xlsx.js');
+  const head = ['Credate', 'Userid', 'User Name', 'Code', 'Desc', 'Custname', 'Company Name', 'Mobile', 'Strength', 'Description', 'Notes1', 'Notes2', 'Notes3', 'FOC', 'Desc', 'Vehmodel'];
+  const rows = [['02/09/2026', 'nsl1', 'Test Salesman', 'N42', 'Lapsed-Lost', 'Mrs. Test Beta', '', '39996001', 4, 'Medium', 'She change her mind to Haval H6', '', '', 'N58', 'NIS', 'N/'],
+    ['02/09/2026', 'nsl1', 'Test Salesman', 'N43', 'Lapsed-Lost', 'Ms. Test Delta', '', '39996002', 4, 'Medium', 'She need to', 'auto loan', '', 'N55', 'Lapsed', 'N/Y63']];
+  const ws = XLSX.utils.aoa_to_sheet([head, ...rows]); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'S');
+  const s = await login('admin@t.local', 'admin password 123');
+  const up = await fetch(base + '/api/uploads', { method: 'POST', headers: { Cookie: s.cookie, 'X-CSRF-Token': s.csrf, 'X-File-Name': 'crm.xlsx', 'Content-Type': 'application/octet-stream' }, body: XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) });
+  const u = await up.json();
+  assert.equal(u.map.reason, 'Notes1 + Notes2 + Notes3');
+  assert.equal(u.map.name, 'Custname');
+  const imp = await (await api(s, 'POST', '/api/imports', { uploadId: u.uploadId, map: u.map })).json();
+  assert.equal(imp.summary.excluded, 0);
+  assert.equal(imp.summary.bucketCount.competitor.send + imp.summary.bucketCount.competitor.hold, 1);
+  assert.equal(imp.summary.bucketCount.price.send + imp.summary.bucketCount.price.hold, 1);
+});

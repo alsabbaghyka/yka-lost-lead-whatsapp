@@ -1,7 +1,7 @@
 'use strict';
 // Imports (the engine on the server) and campaigns: build -> submit -> approve
 // (by someone else) -> start -> pause / resume / complete / cancel.
-const { runEngine, detect, detectByContent, EX_LABEL } = require('../rules/engine');
+const { runEngine, detect, detectByContent, EX_LABEL, JOIN } = require('../rules/engine');
 const { iso } = require('../rules/mobile');
 const Q = require('../rules/sequence');
 const C = require('../clock');
@@ -38,9 +38,9 @@ async function createImport(ctx, { fileName, rows, map, user, headerless = false
   const headers = Object.keys(rows.reduce((a, r) => Object.assign(a, r), {}));
   const m = map && Object.keys(map).length ? map : (headerless ? detectByContent(rows, headers) : detect(headers));
   if (!m.mobile || !m.reason) { const e = bad('Could not find the mobile and loss reason columns. Pick them in the column mapping.'); e.headers = headers; e.map = m; throw e; }
-  for (const k of Object.keys(m)) if (m[k] && !headers.includes(m[k])) throw bad(`Column "${m[k]}" is not in the file`);
+  for (const k of Object.keys(m)) for (const h of (m[k] && !headers.includes(m[k]) ? m[k].split(JOIN) : [])) if (!headers.includes(h)) throw bad(`Column "${h}" is not in the file`);
   const s = await Settings.all(ctx.db), now = ctx.clock.now();
-  const opts = { holdPct: s.holdout_pct, seed: s.holdout_key, consentFrom: s.consent_from || null, recentDays: s.recent_days, now, start: C.bahrainDate(now),
+  const opts = { holdPct: s.holdout_pct, seed: s.holdout_key, consentFrom: s.consent_from || null, recentDays: s.recent_days, now, start: C.bahrainDate(now), defaultBrand: s.default_brand,
     optouts: new Set((await ctx.db.prepare('SELECT mobile FROM optouts').all()).map(r => r.mobile)),
     exclude: new Set((await ctx.db.prepare('SELECT mobile FROM suppressions').all()).map(r => r.mobile)),
     history: await history(ctx.db) };

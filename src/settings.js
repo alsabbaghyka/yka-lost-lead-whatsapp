@@ -21,6 +21,7 @@ const DEFS = {
   consent_from: { def: '2026-11-01', parse: date, label: 'Leads before this date get the permission request first' },
   recent_days: { def: 30, parse: int(0, 365), label: 'Skip anyone messaged in the last N days' },
   max_attempts: { def: 5, parse: int(1, 10), label: 'Send attempts before a message goes to dead letters' },
+  default_brand: { def: '', parse: v => { const t = String(v == null ? '' : v).trim(); if (t.length > 40) throw new Error('At most 40 characters'); if (/[{}<>]/.test(t)) throw new Error('No braces or angle brackets'); return t; }, label: 'Brand named in messages when the file has no brand column (blank = Y.K. Almoayyed)' },
   template_language: { def: 'en', parse: v => { if (!/^[a-z]{2}(_[A-Z]{2})?$/.test(String(v))) throw new Error('Language code like en or en_US'); return String(v); }, label: 'Template language code as submitted to Meta' }
 };
 
