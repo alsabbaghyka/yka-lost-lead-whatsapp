@@ -1,0 +1,13 @@
+{
+  "name": "yka-lost-lead-whatsapp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lost Lead WhatsApp system: CRM lost-sales export to approved WhatsApp Cloud API campaigns, with holdout measurement.",
+  "type": "commonjs",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test --test-concurrency=1 test/",
+    "create-admin": "node cli.js create-admin"
+  }
+}
