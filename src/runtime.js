@@ -39,11 +39,11 @@ function startWorkers(ctx) {
   return () => { clearInterval(t1); clearInterval(t2); clearTimeout(t3); };
 }
 
-async function start({ env: e = env(), listen = true } = {}) {
+async function start({ env: e = env(), listen = true, clock, workers = true } = {}) {
   checkVendor();
   const cfg = loadConfig(e);
   const db = openDb(cfg.dbPath);
-  const ctx = createContext({ cfg, db });
+  const ctx = createContext({ cfg, db, clock });
   const interrupted = Sender.recoverInFlight(ctx);
   if (interrupted) log(`${interrupted} message(s) were mid-send at the last shutdown and went to dead letters for a person to check`);
   if (cfg.provider !== 'cloud') {
@@ -52,7 +52,7 @@ async function start({ env: e = env(), listen = true } = {}) {
   }
   const server = http.createServer(createApp(ctx));
   server.requestTimeout = 60e3; server.headersTimeout = 20e3;
-  const stopWorkers = startWorkers(ctx);
+  const stopWorkers = workers ? startWorkers(ctx) : () => {};
   if (listen) await new Promise(res => server.listen(cfg.port, cfg.host, res));
   const users = db.prepare('SELECT COUNT(*) n FROM users').get().n;
   log(`Lost Lead WhatsApp listening on http://${cfg.host}:${cfg.port} — provider ${cfg.provider}, Graph ${cfg.graphVersion}, database ${cfg.dbPath}`);

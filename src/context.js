@@ -3,7 +3,8 @@
 const { makeProvider } = require('./providers');
 const { systemClock } = require('./clock');
 
-function createContext({ cfg, db, clock = systemClock, provider }) {
+function createContext({ cfg, db, clock, provider }) {
+  clock = clock || systemClock;
   const ctx = { cfg, db, clock, nowIso: () => new Date(clock.now()).toISOString() };
   const webhook = require('./webhook');
   // the mock provider hands its signed webhooks to the same entry point Meta's use
