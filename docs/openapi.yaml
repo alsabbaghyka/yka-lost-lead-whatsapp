@@ -1,0 +1,173 @@
+openapi: 3.1.0
+info:
+  title: Lost Lead WhatsApp API
+  version: 0.1.0
+  description: |
+    REST API behind the Lost Lead WhatsApp screens. Sign in with POST /api/login; the
+    response sets an httpOnly session cookie and returns a `csrf` token that every
+    POST / PUT / PATCH / DELETE must send in the `X-CSRF-Token` header. Bodies are JSON
+    except POST /api/uploads (raw file bytes). Errors are `{ "error": "message" }` with
+    400 (bad input), 401 (not signed in), 403 (role or CSRF), 404, 409 (wrong state), 413.
+    Roles: admin, marketing, sales, viewer (see src/auth.js PERMS).
+servers:
+  - url: http://127.0.0.1:8080
+security:
+  - session: []
+components:
+  securitySchemes:
+    session: { type: apiKey, in: cookie, name: lle_sid }
+    csrf: { type: apiKey, in: header, name: X-CSRF-Token }
+  parameters:
+    id: { name: id, in: path, required: true, schema: { type: integer } }
+    mobile: { name: mobile, in: path, required: true, schema: { type: string }, description: 'Bahrain mobile, URL-encoded, e.g. %2B97339991000' }
+  schemas:
+    Error: { type: object, properties: { error: { type: string } } }
+    Ok: { type: object, properties: { ok: { type: boolean } } }
+    User: { type: object, properties: { id: { type: integer }, email: { type: string }, name: { type: string }, role: { type: string, enum: [admin, marketing, sales, viewer] }, active: { type: integer } } }
+    ImportSummary:
+      type: object
+      properties:
+        total: { type: integer }
+        unique: { type: integer }
+        send: { type: integer }
+        holdout: { type: integer, description: WhatsApp holdout plus Meta holdout }
+        meta: { type: integer }
+        excluded: { type: integer }
+        exCount: { type: object, additionalProperties: { type: integer } }
+        bucketCount: { type: object }
+    Campaign:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        import_id: { type: integer }
+        status: { type: string, enum: [draft, pending_approval, approved, running, paused, completed, cancelled] }
+        start_date: { type: string, format: date, description: Day 0, Bahrain calendar date }
+        language: { type: string }
+        created_by: { type: integer }
+        approved_by: { type: [integer, 'null'] }
+    Results:
+      type: object
+      properties:
+        ready: { type: boolean }
+        windowDays: { type: integer }
+        messaged: { $ref: '#/components/schemas/Arm' }
+        holdout: { $ref: '#/components/schemas/Arm' }
+        compare: { type: object, properties: { p1: { type: number }, p2: { type: number }, diff: { type: number }, z: { type: number }, p: { type: number }, lo: { type: number }, hi: { type: number } } }
+        mde: { type: [number, 'null'], description: smallest difference provable at 95% / 80% power }
+        matched: { type: integer }
+        verdict: { type: object, properties: { significant: { type: boolean }, direction: { type: string }, headline: { type: string }, interval: { type: string } } }
+        notes: { type: array, items: { type: object, properties: { text: { type: string }, warn: { type: boolean } } } }
+    Arm: { type: object, properties: { n: { type: integer }, conv: { type: integer }, undated: { type: integer }, rate: { type: number } } }
+paths:
+  /healthz:
+    get: { security: [], summary: Health check, responses: { '200': { description: '{ok, provider, webhookBacklog, halted}' } } }
+  /webhook:
+    get:
+      security: []
+      summary: Meta webhook verification
+      parameters:
+        - { name: hub.mode, in: query, schema: { type: string } }
+        - { name: hub.verify_token, in: query, schema: { type: string } }
+        - { name: hub.challenge, in: query, schema: { type: string } }
+      responses: { '200': { description: the challenge, as text }, '403': { description: wrong token } }
+    post:
+      security: []
+      summary: Meta webhook notifications (messages, statuses, template status updates)
+      parameters: [{ name: X-Hub-Signature-256, in: header, required: true, schema: { type: string }, description: 'sha256=<HMAC-SHA256 of the raw body with the app secret>' }]
+      requestBody: { content: { application/json: { schema: { type: object } } } }
+      responses: { '200': { description: stored (processed afterwards) }, '401': { description: bad signature } }
+  /api/login:
+    post:
+      security: []
+      requestBody: { content: { application/json: { schema: { type: object, required: [email, password], properties: { email: { type: string }, password: { type: string } } } } } }
+      responses: { '200': { description: '{user, csrf}; sets the session cookie' }, '401': { description: wrong email or password }, '429': { description: too many attempts } }
+  /api/logout: { post: { responses: { '200': { description: signed out } } } }
+  /api/me: { get: { responses: { '200': { description: '{user, csrf, perms, provider, goLive, killSwitch, halted}' } } } }
+  /api/dashboard: { get: { responses: { '200': { description: counts, mode flags, pending approvals, latest messages } } } }
+  /api/uploads:
+    post:
+      summary: Upload a spreadsheet; returns detected columns and a one-time uploadId (30 minutes)
+      parameters: [{ name: X-File-Name, in: header, schema: { type: string } }]
+      requestBody: { content: { application/octet-stream: { schema: { type: string, format: binary } } } }
+      responses: { '200': { description: '{uploadId, fileName, rowCount, headers, headerless, map, fields, sample}' } }
+  /api/imports:
+    get: { responses: { '200': { description: imports, newest first } } }
+    post:
+      summary: Run the engine over an upload (role import)
+      requestBody: { content: { application/json: { schema: { type: object, required: [uploadId], properties: { uploadId: { type: string }, map: { type: object, description: 'field -> column header; mobile and reason required' } } } } } }
+      responses: { '200': { description: '{importId, summary, map, headers}', content: { application/json: { schema: { type: object, properties: { importId: { type: integer }, summary: { $ref: '#/components/schemas/ImportSummary' } } } } } } }
+  /api/imports/sample: { post: { summary: Import the engine's fictional 160-row sample, responses: { '200': { description: '{importId, summary}' } } } }
+  /api/imports/{id}: { get: { parameters: [{ $ref: '#/components/parameters/id' }], responses: { '200': { description: '{import, send, holdout, meta, excluded}' } } } }
+  /api/imports/{id}/export/{kind}:
+    get:
+      parameters: [{ $ref: '#/components/parameters/id' }, { name: kind, in: path, required: true, schema: { type: string, enum: [send, holdout, meta, excluded] } }]
+      responses: { '200': { description: CSV, content: { text/csv: {} } } }
+  /api/campaigns:
+    get: { responses: { '200': { description: campaigns } } }
+    post:
+      summary: Create a draft (role campaign.build)
+      requestBody: { content: { application/json: { schema: { type: object, required: [importId, startDate], properties: { importId: { type: integer }, name: { type: string }, startDate: { type: string, format: date } } } } } }
+      responses: { '200': { description: the draft, content: { application/json: { schema: { $ref: '#/components/schemas/Campaign' } } } } }
+  /api/campaigns/{id}: { get: { parameters: [{ $ref: '#/components/parameters/id' }], responses: { '200': { description: '{campaign, import, statuses, groups, funnel, replied, failures, waiting}' } } } }
+  /api/campaigns/{id}/submit: { post: { parameters: [{ $ref: '#/components/parameters/id' }], summary: draft -> pending_approval (builder or admin), responses: { '200': { description: ok } } } }
+  /api/campaigns/{id}/approve: { post: { parameters: [{ $ref: '#/components/parameters/id' }], summary: pending_approval -> approved; must not be the builder, responses: { '200': { description: ok }, '403': { description: same person } } } }
+  /api/campaigns/{id}/reject: { post: { parameters: [{ $ref: '#/components/parameters/id' }], summary: 'back to draft with {note}', responses: { '200': { description: ok } } } }
+  /api/campaigns/{id}/start: { post: { parameters: [{ $ref: '#/components/parameters/id' }], summary: approved -> running; enrols send and holdout groups, responses: { '200': { description: '{enrolled, optedOut}' } } } }
+  /api/campaigns/{id}/pause: { post: { parameters: [{ $ref: '#/components/parameters/id' }], responses: { '200': { description: ok } } } }
+  /api/campaigns/{id}/resume: { post: { parameters: [{ $ref: '#/components/parameters/id' }], responses: { '200': { description: ok } } } }
+  /api/campaigns/{id}/complete: { post: { parameters: [{ $ref: '#/components/parameters/id' }], responses: { '200': { description: ok } } } }
+  /api/campaigns/{id}/cancel: { post: { parameters: [{ $ref: '#/components/parameters/id' }], summary: cancels and drops queued automated messages, responses: { '200': { description: ok } } } }
+  /api/campaigns/{id}/results:
+    get:
+      parameters: [{ $ref: '#/components/parameters/id' }, { name: window, in: query, schema: { type: integer, default: 60 } }]
+      responses: { '200': { description: send vs holdout, content: { application/json: { schema: { $ref: '#/components/schemas/Results' } } } } }
+  /api/campaigns/{id}/export/crm: { get: { parameters: [{ $ref: '#/components/parameters/id' }], summary: CRM write-back CSV, responses: { '200': { description: CSV, content: { text/csv: {} } } } } }
+  /api/templates: { get: { responses: { '200': { description: catalogue with Meta status } } } }
+  /api/templates/sync: { post: { summary: Read template status from the WABA, responses: { '200': { description: '{total, approved}' } } } }
+  /api/templates/export: { get: { summary: Bodies to submit to Meta (English, Arabic placeholders, drafts marked), responses: { '200': { description: CSV } } } }
+  /api/inbox: { get: { summary: Handed-over customers (sales see theirs and unassigned), responses: { '200': { description: items with window_open } } } }
+  /api/inbox/{id}/reply: { post: { parameters: [{ $ref: '#/components/parameters/id' }], requestBody: { content: { application/json: { schema: { type: object, properties: { body: { type: string } } } } } }, responses: { '200': { description: '{messageId}; blocked at send time if the 24h window has closed' } } } }
+  /api/inbox/{id}/resolve: { post: { parameters: [{ $ref: '#/components/parameters/id' }], requestBody: { content: { application/json: { schema: { type: object, properties: { note: { type: string } } } } } }, responses: { '200': { description: ok } } } }
+  /api/inbox/{id}/assign: { post: { parameters: [{ $ref: '#/components/parameters/id' }], requestBody: { content: { application/json: { schema: { type: object, properties: { userId: { type: integer } } } } } }, responses: { '200': { description: ok } } } }
+  /api/customers: { get: { parameters: [{ name: q, in: query, schema: { type: string } }], responses: { '200': { description: matches } } } }
+  /api/customers/{mobile}: { get: { parameters: [{ $ref: '#/components/parameters/mobile' }], responses: { '200': { description: '{customer, optout, suppressions, enrollments, messages, imports}' } } } }
+  /api/customers/{mobile}/erase:
+    post:
+      summary: Erase history (admin); opt-out and do-not-contact are kept
+      parameters: [{ $ref: '#/components/parameters/mobile' }]
+      requestBody: { content: { application/json: { schema: { type: object, required: [confirm], properties: { confirm: { type: string, description: the same mobile again } } } } } }
+      responses: { '200': { description: counts deleted, optOutKept } }
+  /api/optouts:
+    get: { responses: { '200': { description: opt-outs } } }
+    post: { requestBody: { content: { application/json: { schema: { type: object, properties: { mobile: { type: string }, note: { type: string } } } } } }, responses: { '200': { description: '{added, enrollments, cancelled}' } } }
+  /api/optouts/import: { post: { requestBody: { content: { application/json: { schema: { type: object, properties: { uploadId: { type: string } } } } } }, summary: 'A replies export (our outbound rows ignored) or a plain number list', responses: { '200': { description: '{found, added, outbound, noText}' } } } }
+  /api/optouts/export: { get: { responses: { '200': { description: CSV } } } }
+  /api/suppressions:
+    get: { parameters: [{ name: list, in: query, schema: { type: string, enum: [dnc, recent_buyer] } }], responses: { '200': { description: entries } } }
+    post: { requestBody: { content: { application/json: { schema: { type: object, properties: { list: { type: string, enum: [dnc, recent_buyer] }, mobiles: { type: array, items: { type: string } } } } } } }, responses: { '200': { description: '{added, invalid}' } } }
+  /api/suppressions/import: { post: { requestBody: { content: { application/json: { schema: { type: object, properties: { uploadId: { type: string }, list: { type: string } } } } } }, responses: { '200': { description: '{added, invalid}' } } } }
+  /api/suppressions/{list}/{mobile}: { delete: { parameters: [{ name: list, in: path, required: true, schema: { type: string } }, { $ref: '#/components/parameters/mobile' }], responses: { '200': { description: '{removed}' } } } }
+  /api/allowlist:
+    get: { responses: { '200': { description: test-mode allow-list } } }
+    post: { summary: admin, requestBody: { content: { application/json: { schema: { type: object, properties: { mobile: { type: string }, note: { type: string } } } } } }, responses: { '200': { description: '{mobile}' } } }
+  /api/allowlist/{mobile}: { delete: { parameters: [{ $ref: '#/components/parameters/mobile' }], responses: { '200': { description: ok } } } }
+  /api/outcomes:
+    get: { responses: { '200': { description: outcome files } } }
+  /api/outcomes/import: { post: { requestBody: { content: { application/json: { schema: { type: object, properties: { uploadId: { type: string } } } } } }, responses: { '200': { description: '{batch, mobiles, rows, dateColumns}' } } } }
+  /api/outcomes/{batch}: { delete: { parameters: [{ name: batch, in: path, required: true, schema: { type: string } }], responses: { '200': { description: '{removed}' } } } }
+  /api/settings:
+    get: { responses: { '200': { description: '{values, describe, provider, graphVersion, phoneNumberId, wabaId, webhookPath, publicUrl}' } } }
+    put: { summary: 'admin; any of go_live, kill_switch, daily_cap, max_per_second, friday_skip, quiet_start, quiet_end, send_time, holdout_pct, holdout_key, consent_from, recent_days, max_attempts, template_language', requestBody: { content: { application/json: { schema: { type: object } } } }, responses: { '200': { description: all values }, '400': { description: invalid value } } }
+  /api/settings/test-connection: { post: { summary: admin, responses: { '200': { description: '{ok, detail}' } } } }
+  /api/system/kill: { post: { summary: 'engage (admin/marketing) or release (admin) the kill switch', requestBody: { content: { application/json: { schema: { type: object, properties: { on: { type: boolean } } } } } }, responses: { '200': { description: '{killSwitch}' } } } }
+  /api/system/resume-sending: { post: { summary: clear an account-error halt (admin), responses: { '200': { description: ok } } } }
+  /api/dead-letters: { get: { responses: { '200': { description: open dead letters } } } }
+  /api/dead-letters/{id}/retry: { post: { parameters: [{ $ref: '#/components/parameters/id' }], responses: { '200': { description: ok } } } }
+  /api/dead-letters/{id}/discard: { post: { parameters: [{ $ref: '#/components/parameters/id' }], responses: { '200': { description: ok } } } }
+  /api/audit: { get: { parameters: [{ name: limit, in: query, schema: { type: integer } }, { name: before, in: query, schema: { type: integer } }], responses: { '200': { description: audit entries, newest first; mobiles masked } } } }
+  /api/users:
+    get: { responses: { '200': { description: users, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/User' } } } } } } }
+    post: { summary: admin, requestBody: { content: { application/json: { schema: { type: object, properties: { email: { type: string }, name: { type: string }, role: { type: string }, password: { type: string, minLength: 12 } } } } } }, responses: { '200': { description: the user } } }
+  /api/users/{id}: { patch: { parameters: [{ $ref: '#/components/parameters/id' }], requestBody: { content: { application/json: { schema: { type: object, properties: { role: { type: string }, active: { type: boolean }, password: { type: string } } } } } }, responses: { '200': { description: the user } } } }
+  /api/dev/simulate-reply: { post: { summary: 'Mock provider only: pretend a customer replied', requestBody: { content: { application/json: { schema: { type: object, properties: { mobile: { type: string }, text: { type: string }, kind: { type: string, enum: [text, button, button_reply, list_reply] } } } } } }, responses: { '200': { description: ok }, '404': { description: not the mock provider } } } }

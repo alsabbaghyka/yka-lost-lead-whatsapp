@@ -230,7 +230,7 @@ function createApp(ctx) {
     const m = cleanMobile(body.mobile); if (!m) throw httpError(400, 'Not a Bahrain mobile');
     ctx.provider.simulateInbound({ from: m, text: String(body.text || ''), kind: body.kind || 'text' });
     await ctx.provider.flush(); await ctx.processWebhooks();
-    audit(ctx.db, user, 'dev.simulate_reply', m, { text: body.text });
+    audit(ctx.db, user, 'dev.simulate_reply', m, { chars: String(body.text || '').length }); // the text itself stays on the customer timeline, which erasure clears
     return { ok: true };
   });
 

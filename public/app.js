@@ -443,6 +443,6 @@ async function render() {
     main.innerHTML = `<div class="banner bad">${esc(e.message)}</div>`;
   }
 }
-window.addEventListener('hashchange', render);
+window.addEventListener('hashchange', () => { window.scrollTo(0, 0); render(); });
 render();
 })();
